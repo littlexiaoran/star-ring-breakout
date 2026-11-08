@@ -86,7 +86,7 @@
         </div>
 
         <div class="minimap" aria-label="当前星域小地图" data-en-aria="Sector minimap">
-          <div><span id="minimap-name">星港残骸</span><small>2400 × 1600</small></div>
+          <div><span id="minimap-name">星港残骸</span><small>2400 × 1620</small></div>
           <canvas id="minimap-canvas" width="168" height="112"></canvas>
         </div>
       </section>
@@ -145,17 +145,23 @@
                 <button id="endless-gear-btn" class="gear-btn" type="button" aria-label="无尽模式设置" title="无尽模式设置" data-en-aria="Endless mode settings" data-en-title="Endless mode settings">⚙</button>
               </div>
             </div>
-          </div>
-          <p class="eyebrow">SELECT SECTOR</p>
-          <div class="map-title-row">
-            <h2 data-en="Choose Sector">选择星域</h2>
             <button id="custom-map-entry" class="custom-map-entry" type="button">
               <span class="map-swatch"></span>
               <strong data-en="Custom Sector">自制星域</strong>
               <p data-en="Make your own sector">制作你的专属星域</p>
             </button>
           </div>
-          <p class="panel-subtitle" data-en="Different terrain and hazards — waves and upgrades stay the same">地形与危险机制不同，波次与强化规则一致</p>
+          <p class="eyebrow">SELECT SECTOR</p>
+          <div class="map-title-row">
+            <div class="title-cluster">
+              <h2 data-en="Choose Sector">选择星域</h2>
+              <button id="map-random-entry" class="custom-map-entry random-entry" type="button">
+                <span class="map-swatch"></span>
+                <strong data-en="Random Sector">随机星域</strong>
+                <p data-en="Enter a random map">随机进入一张地图</p>
+              </button>
+            </div>
+          </div>
           <div id="map-cards" class="map-cards"></div>
           <div class="map-actions">
             <button id="map-back-btn" class="secondary-btn" type="button" data-en="Back">返回</button>
@@ -207,8 +213,16 @@
             <button id="custom-import-btn" class="mode-option" type="button" data-en="Import Map">导入地图</button>
           </div>
           <p class="eyebrow">SELECT SECTOR</p>
-          <h2 data-en="Choose Custom Sector">选择自制星域</h2>
-          <p class="panel-subtitle" data-en="Different terrain and hazards — waves and upgrades stay the same">地形与危险机制不同，波次与强化规则一致</p>
+          <div class="map-title-row">
+            <div class="title-cluster">
+              <h2 data-en="Choose Custom Sector">选择自制星域</h2>
+              <button id="custom-random-entry" class="custom-map-entry random-entry" type="button">
+                <span class="map-swatch"></span>
+                <strong data-en="Random Sector">随机星域</strong>
+                <p data-en="Enter a random map">随机进入一张地图</p>
+              </button>
+            </div>
+          </div>
           <div id="custom-map-cards" class="map-cards"></div>
           <p id="custom-empty" class="custom-empty" hidden data-en="No custom sectors yet — use Map Maker at the top right to create your first map, or Import Map to paste a map code.">还没有自制星域——点击右上角「自制地图」创建第一张地图，或「导入地图」粘贴地图码。</p>
           <div class="map-actions">
@@ -318,6 +332,10 @@
           <div class="setting-row">
             <div><strong data-en="Boss Arena">Boss 专用关卡</strong><small data-en="Teleport to a dedicated arena for boss fights">Boss 关传送到专用竞技场</small></div>
             <button id="settings-bossarena-toggle" class="sound-switch" type="button" role="switch" aria-checked="true" aria-label="Boss 专用关卡" data-en-aria="Boss Arena"><i aria-hidden="true"></i><span>开启</span></button>
+          </div>
+          <div class="setting-row">
+            <div><strong data-en="Editor Grid">编辑网格</strong><small data-en="Show grid lines in the map editor">在地图编辑器中显示网格线</small></div>
+            <button id="settings-editor-grid-toggle" class="sound-switch" type="button" role="switch" aria-checked="true" aria-label="编辑网格" data-en-aria="Editor Grid"><i aria-hidden="true"></i><span>开启</span></button>
           </div>
           <div class="setting-row">
             <div><strong data-en="Language">语言</strong><small data-en="Interface language">界面显示语言</small></div>

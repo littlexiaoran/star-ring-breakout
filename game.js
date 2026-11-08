@@ -98,6 +98,7 @@ const ui = {
   minimapName: byId("minimap-name"),
   mapOverlay: byId("map-overlay"),
   mapCards: byId("map-cards"),
+  mapRandomEntry: byId("map-random-entry"),
   mapStartButton: byId("map-start-btn"),
   mapBackButton: byId("map-back-btn"),
   modeToggle: byId("mode-toggle"),
@@ -127,6 +128,7 @@ const ui = {
   settingsAutoFireToggle: byId("settings-auto-fire-toggle"),
   settingsUnlimitedToggle: byId("settings-unlimited-toggle"),
   settingsBossArenaToggle: byId("settings-bossarena-toggle"),
+  settingsEditorGridToggle: byId("settings-editor-grid-toggle"),
   settingsLangToggle: byId("settings-lang-toggle"),
   settingsCloseButton: byId("settings-close-btn"),
   resetConfirm: byId("reset-overlay"),
@@ -293,7 +295,7 @@ const ENEMY_STATS = {
 };
 
 const WORLD_WIDTH = 2400;
-const WORLD_HEIGHT = 1600;
+const WORLD_HEIGHT = 1620;
 const REACH_CELL = 30;
 const MIN_PLAYABLE_CELLS = 16;
 const VIEW_LONG_SIDE = 31 * 40;
@@ -803,6 +805,10 @@ class Game {
     try {
       this.unlimited = localStorage.getItem("star-ring-unlimited") === "on";
     } catch {}
+    this.editorGrid = true;
+    try {
+      this.editorGrid = localStorage.getItem("star-ring-editor-grid") !== "off";
+    } catch {}
     this.look = "classic";
     try {
       const savedLook = localStorage.getItem("star-ring-look");
@@ -882,6 +888,7 @@ class Game {
     this.updateUnlimitedControl();
     this.updateCustomControls();
     this.updateBossArenaControl();
+    this.updateEditorGridControl();
     this.updateLangControl();
     this.renderModeUI();
     this.refreshMenuRecords();
@@ -896,6 +903,7 @@ class Game {
     ui.startButton.addEventListener("click", () => this.openMapSelect());
     ui.mapStartButton.addEventListener("click", () => this.start());
     ui.mapBackButton.addEventListener("click", () => this.closeMapSelect());
+    ui.mapRandomEntry.addEventListener("click", () => this.selectMap("random"));
     const bindModeToggle = (toggle, gearButton) => {
       toggle.addEventListener("click", (event) => {
         const button = event.target.closest("[data-mode]");
@@ -1000,6 +1008,13 @@ ui.customMapEntry.addEventListener("click", () => {
       this.customCfg.bossArena = !this.customCfg.bossArena;
       this.saveCustomCfg();
       this.updateBossArenaControl();
+    });
+    ui.settingsEditorGridToggle.addEventListener("click", () => {
+      this.editorGrid = !this.editorGrid;
+      try {
+        localStorage.setItem("star-ring-editor-grid", this.editorGrid ? "on" : "off");
+      } catch {}
+      this.updateEditorGridControl();
     });
     ui.endlessCustomToggle.addEventListener("click", () => {
       this.customCfg.endless = !this.customCfg.endless;
@@ -1176,6 +1191,7 @@ ui.customMapEntry.addEventListener("click", () => {
     this.updateUnlimitedControl();
     this.updateCustomControls();
     this.updateBossArenaControl();
+    this.updateEditorGridControl();
     this.updateLangControl();
     if (this.state === "playing") ui.pauseButton.textContent = I18N.t("hud.pause");
     else if (this.state === "paused") ui.pauseButton.textContent = I18N.t("hud.resume");
@@ -2128,6 +2144,7 @@ ui.customMapEntry.addEventListener("click", () => {
   createMap() {
     this.obstacles = [];
     this.reachGrid = null;
+    this.spawnReach = new Map();
     this.customUnplayable = false;
     this._navCache = null;
     this._navQueue = [];
@@ -2170,6 +2187,7 @@ ui.customMapEntry.addEventListener("click", () => {
         custom: true
       }));
       this.reachGrid = this.buildReachGrid();
+      this.spawnReach = new Map();
       this.customUnplayable = this.reachGrid.best.size < MIN_PLAYABLE_CELLS;
       this.powerupPoints = [{ x: 300, y: 300 }, { x: 2100, y: 1300 }, { x: 2100, y: 300 }, { x: 300, y: 1300 }];
     } else if (this.map.id === "harbor") {
@@ -2285,6 +2303,67 @@ ui.customMapEntry.addEventListener("click", () => {
     return grid.label[gy * grid.cols + gx];
   }
 
+  buildSpawnReach(clearance) {
+    const cell = 15;
+    const cols = Math.floor(this.world.width / cell);
+    const rows = Math.floor(this.world.height / cell);
+    const total = cols * rows;
+    const blocked = new Uint8Array(total);
+    for (let idx = 0; idx < total; idx += 1) {
+      const x = (idx % cols) * cell + cell / 2;
+      const y = ((idx / cols) | 0) * cell + cell / 2;
+      if (this.obstacles.some((obstacle) => distanceToRect(x, y, obstacle) < clearance)) blocked[idx] = 1;
+    }
+    const reach = new Uint8Array(total);
+    let seed = Math.floor(this.player.y / cell) * cols + Math.floor(this.player.x / cell);
+    if (blocked[seed]) {
+      const gx = seed % cols;
+      const gy = (seed / cols) | 0;
+      let found = false;
+      for (let r = 1; r <= 12 && !found; r += 1) {
+        for (let dy = -r; dy <= r && !found; dy += 1) {
+          for (let dx = -r; dx <= r; dx += 1) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const nx = gx + dx;
+            const ny = gy + dy;
+            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+            const ni = ny * cols + nx;
+            if (!blocked[ni]) {
+              seed = ni;
+              found = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (!blocked[seed]) {
+      const queue = [seed];
+      reach[seed] = 1;
+      while (queue.length) {
+        const idx = queue.pop();
+        if (idx % cols > 0 && !blocked[idx - 1] && !reach[idx - 1]) { reach[idx - 1] = 1; queue.push(idx - 1); }
+        if (idx % cols < cols - 1 && !blocked[idx + 1] && !reach[idx + 1]) { reach[idx + 1] = 1; queue.push(idx + 1); }
+        if (idx - cols >= 0 && !blocked[idx - cols] && !reach[idx - cols]) { reach[idx - cols] = 1; queue.push(idx - cols); }
+        if (idx + cols < total && !blocked[idx + cols] && !reach[idx + cols]) { reach[idx + cols] = 1; queue.push(idx + cols); }
+      }
+    }
+    return { cols, rows, cell, reach };
+  }
+
+  spawnReachable(x, y, radius) {
+    if (!this.reachGrid || !this.player) return true;
+    const clearance = radius + 2;
+    let grid = this.spawnReach.get(clearance);
+    if (!grid) {
+      grid = this.buildSpawnReach(clearance);
+      this.spawnReach.set(clearance, grid);
+    }
+    const gx = Math.max(0, Math.min(grid.cols - 1, Math.floor(x / grid.cell)));
+    const gy = Math.max(0, Math.min(grid.rows - 1, Math.floor(y / grid.cell)));
+    return !!grid.reach[gy * grid.cols + gx];
+  }
+
   findPlayerSpawn() {
     const grid = this.reachGrid;
     const centerX = this.world.width / 2;
@@ -2292,6 +2371,7 @@ ui.customMapEntry.addEventListener("click", () => {
     let bestClear = null;
     let bestClearDist = Infinity;
     let bestAny = null;
+    let bestAnyClearance = -1;
     let bestAnyDist = Infinity;
     for (let idx = 0; idx < grid.cols * grid.rows; idx += 1) {
       if (grid.label[idx] !== grid.best.label) continue;
@@ -2299,13 +2379,19 @@ ui.customMapEntry.addEventListener("click", () => {
       const y = ((idx / grid.cols) | 0) * REACH_CELL + REACH_CELL / 2;
       if (x > this.world.width || y > this.world.height) continue;
       const dist = (x - centerX) ** 2 + (y - centerY) ** 2;
-      if (this.obstacles.every((obstacle) => distanceToRect(x, y, obstacle) >= 24)) {
+      let clearance = Infinity;
+      for (const obstacle of this.obstacles) {
+        const d = distanceToRect(x, y, obstacle);
+        if (d < clearance) clearance = d;
+      }
+      if (clearance >= 24) {
         if (dist < bestClearDist) {
           bestClearDist = dist;
           bestClear = { x, y };
         }
       }
-      if (dist < bestAnyDist) {
+      if (clearance > bestAnyClearance || (clearance === bestAnyClearance && dist < bestAnyDist)) {
+        bestAnyClearance = clearance;
         bestAnyDist = dist;
         bestAny = { x, y };
       }
@@ -2318,7 +2404,7 @@ ui.customMapEntry.addEventListener("click", () => {
     const margin = stats.radius + 30;
     const playerLabel = this.reachGrid ? this.reachLabelAt(player.x, player.y) : -1;
     const clear = (x, y) => !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle));
-    const reachable = (x, y) => !this.reachGrid || playerLabel === -1 || this.reachLabelAt(x, y) === playerLabel;
+    const reachable = (x, y) => this.spawnReachable(x, y, stats.radius);
     const rings = this.reachGrid
       ? [
           { min: 500, max: 800, count: 12, needFar: true },
@@ -2337,6 +2423,23 @@ ui.customMapEntry.addEventListener("click", () => {
         const farEnough = !ring.needFar || (x - player.x) ** 2 + (y - player.y) ** 2 > 320 ** 2;
         last = { x, y };
         if (farEnough && clear(x, y) && reachable(x, y)) return { x, y };
+      }
+    }
+    if (this.reachGrid && playerLabel !== -1) {
+      const cells = this.reachGrid.label;
+      const matches = [];
+      for (let idx = 0; idx < cells.length; idx += 1) {
+        if (cells[idx] !== playerLabel) continue;
+        const x = (idx % this.reachGrid.cols) * REACH_CELL + REACH_CELL / 2;
+        const y = ((idx / this.reachGrid.cols) | 0) * REACH_CELL + REACH_CELL / 2;
+        if (this.spawnReachable(x, y, stats.radius)) matches.push(idx);
+      }
+      if (matches.length) {
+        const idx = matches[(Math.random() * matches.length) | 0];
+        return {
+          x: (idx % this.reachGrid.cols) * REACH_CELL + REACH_CELL / 2,
+          y: ((idx / this.reachGrid.cols) | 0) * REACH_CELL + REACH_CELL / 2
+        };
       }
     }
     return last || { x: clamp(player.x, margin, this.world.width - margin), y: clamp(player.y, margin, this.world.height - margin) };
@@ -2600,17 +2703,26 @@ ui.customMapEntry.addEventListener("click", () => {
       const blocks = Array.isArray(entry.blocks)
         ? entry.blocks
             .filter((block) => block && Number.isFinite(block.x) && Number.isFinite(block.y) && Number.isFinite(block.width) && Number.isFinite(block.height) && block.width > 0 && block.height > 0)
-            .map((block) => ({
-              x: clamp(block.x, 0, this.world.width - 8),
-              y: clamp(block.y, 0, this.world.height - 8),
-              width: block.width,
-              height: block.height,
-              rot: (Math.round((Number(block.rot) || 0) / 15) % 24) * 15
-            }))
+            .map((block) => {
+              const rot = (Math.round((Number(block.rot) || 0) / 15) % 24) * 15;
+              const hw = block.width / 2;
+              const hh = block.height / 2;
+              const rad = rot * Math.PI / 180;
+              const extentX = Math.abs(hw * Math.cos(rad)) + Math.abs(hh * Math.sin(rad));
+              const extentY = Math.abs(hw * Math.sin(rad)) + Math.abs(hh * Math.cos(rad));
+              return {
+                x: clamp(block.x, extentX - hw, this.world.width - hw - extentX),
+                y: clamp(block.y, extentY - hh, this.world.height - hh - extentY),
+                width: block.width,
+                height: block.height,
+                rot
+              };
+            })
         : [];
       if (!blocks.length) continue;
-      maps.push({ id: entry.id, name: entry.name, desc: typeof entry.desc === "string" ? entry.desc : "", nameKey: null, descKey: null, difficulty: 0, swatch: "#ad8cff", bg: "#0d0a1a", grid: "rgba(150, 120, 200, 0.06)", custom: true, blocks });
+      maps.push({ id: entry.id, name: entry.name, desc: typeof entry.desc === "string" ? entry.desc : "", nameKey: null, descKey: null, difficulty: 0, swatch: "#64fbd2", bg: "#0d0a1a", grid: "rgba(150, 120, 200, 0.06)", custom: true, blocks, createdAt: Number(entry.createdAt) || 0, updatedAt: Number(entry.updatedAt) || 0 });
     }
+    maps.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
     return maps;
   }
 
@@ -2645,6 +2757,11 @@ ui.customMapEntry.addEventListener("click", () => {
   updateBossArenaControl() {
     ui.settingsBossArenaToggle.setAttribute("aria-checked", String(this.customCfg.bossArena));
     ui.settingsBossArenaToggle.querySelector("span").textContent = this.customCfg.bossArena ? I18N.t("hud.on") : I18N.t("hud.off");
+  }
+
+  updateEditorGridControl() {
+    ui.settingsEditorGridToggle.setAttribute("aria-checked", String(this.editorGrid));
+    ui.settingsEditorGridToggle.querySelector("span").textContent = this.editorGrid ? I18N.t("hud.on") : I18N.t("hud.off");
   }
 
   startCustomRun(mapId) {
@@ -2746,30 +2863,28 @@ ui.customMapEntry.addEventListener("click", () => {
     ui.mapCards.replaceChildren();
     const selectedId = this.mapSelectOpen ? this.mapSelectionId : this.selectedMapId;
     const detailId = this.mapSelectOpen ? this.mapDetailId : null;
-    const entries = [...MAP_DEFS, { id: "random", nameKey: "map.random.name", descKey: "map.random.desc", difficulty: 0, swatch: "#ad8cff" }];
+    const entries = [...MAP_DEFS];
     for (const map of entries) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `map-card${map.id === selectedId ? " selected" : ""}${map.id === "random" ? " random-card" : ""}${map.id === detailId ? " detail" : ""}`;
+      button.className = `map-card${map.id === selectedId ? " selected" : ""}${map.id === detailId ? " detail" : ""}`;
       button.dataset.map = map.id;
       button.setAttribute("aria-pressed", String(map.id === selectedId));
       button.style.setProperty("--swatch", map.swatch);
-      const difficulty = map.id === "random" ? I18N.t("map.unknown") : "★".repeat(map.difficulty);
       const classic = this.mode !== "endless";
       const badge = classic && this.badges.includes(map.id) ? `<span class="map-badge">${I18N.t("map.cleared")}</span>` : "";
-      const best = classic && map.id !== "random" ? Number(this.mapBestScores[map.id]) || 0 : null;
+      const best = classic ? Number(this.mapBestScores[map.id]) || 0 : null;
       const bestLabel = best === null ? "" : `<span class="map-best">${I18N.t("map.best", { score: best > 0 ? formatScore(best) : "—" })}</span>`;
-      button.innerHTML = `<span class="card-face"><span class="map-swatch"></span><span class="map-difficulty">${difficulty}</span><strong>${I18N.t(map.nameKey)}</strong><p>${I18N.t(map.descKey)}</p>${badge}${bestLabel}</span>`;
+      button.innerHTML = `<span class="card-face"><span class="map-swatch"></span><strong>${I18N.t(map.nameKey)}</strong><p>${I18N.t(map.descKey)}</p>${badge}${bestLabel}</span>`;
       const detail = document.createElement("span");
       detail.className = "card-detail";
-      detail.innerHTML = `<span class="detail-left"><strong class="detail-title">${I18N.t(map.nameKey)}</strong><span class="detail-meta-row"><span class="map-difficulty">${difficulty}</span>${badge}</span><p>${I18N.t(map.descKey)}</p>${bestLabel}</span>`;
+      detail.innerHTML = `<span class="detail-left"><strong class="detail-title">${I18N.t(map.nameKey)}</strong>${badge}<p class="detail-desc">${I18N.t(map.descKey)}</p>${bestLabel}</span>`;
       const canvas = document.createElement("canvas");
       canvas.className = "detail-preview";
       canvas.width = 192;
       canvas.height = 128;
       if (window.mapPreview) {
-        if (map.id === "random") window.mapPreview.drawRandom(canvas);
-        else window.mapPreview.drawBuiltin(canvas, map.id);
+        window.mapPreview.drawBuiltin(canvas, map.id);
       }
       const previewBox = document.createElement("span");
       previewBox.className = "detail-right";
@@ -2782,8 +2897,8 @@ ui.customMapEntry.addEventListener("click", () => {
     const customEntry = document.createElement("button");
     customEntry.type = "button";
     customEntry.className = "map-card custom-select-card";
-    customEntry.style.setProperty("--swatch", "#ad8cff");
-    customEntry.innerHTML = `<span class="map-swatch"></span><strong>${I18N.t("mapCustomCard.name")}</strong><p>${I18N.t("mapCustomCard.desc")}</p><span class="map-best">${I18N.t("mapCustomCard.count", { n: this.customMaps.length })}</span>`;
+    customEntry.style.setProperty("--swatch", "#64fbd2");
+    customEntry.innerHTML = `<span class="card-face"><span class="map-swatch"></span><strong>${I18N.t("mapCustomCard.name")}</strong><p>${I18N.t("mapCustomCard.desc")}</p><span class="map-best">${I18N.t("mapCustomCard.count", { n: this.customMaps.length })}</span></span>`;
     customEntry.addEventListener("click", () => {
       if (window.mapEditor) window.mapEditor.openSelect();
     });
@@ -2982,8 +3097,8 @@ ui.customMapEntry.addEventListener("click", () => {
     this.spawnTimer = 0.75;
     this.prismTimer = random(8, 20);
     this.intermission = 0;
-    if (number === 5 && !this.isEndlessPlainFinal() && this.customCfg.bossArena) {
-      this.enterBossArena();
+    if (number === 5 && !this.isEndlessPlainFinal()) {
+      if (this.customCfg.bossArena) this.enterBossArena();
       this.spawnEnemy("boss");
       this.spawnRemaining -= 1;
       this.showAnnouncement("wave.final", "wave.finalSub");
@@ -3242,7 +3357,7 @@ ui.customMapEntry.addEventListener("click", () => {
     }
   }
 
-  spawnEnemy(forcedType = null, x = null, y = null) {
+  spawnEnemy(forcedType = null, x = null, y = null, anchor = null) {
     let type = forcedType;
     if (!type) {
       const roll = Math.random();
@@ -3253,13 +3368,18 @@ ui.customMapEntry.addEventListener("click", () => {
       else type = roll < 0.45 ? "chaser" : roll < 0.72 ? "shooter" : "dasher";
     }
     const stats = ENEMY_STATS[type];
+    if (x !== null && y !== null && this.reachGrid && anchor) {
+      if (!this.spawnReachable(x, y, stats.radius)) {
+        x = anchor.x;
+        y = anchor.y;
+      }
+    }
     if (type === "boss") {
       x = clamp(this.player.x, 280, this.world.width - 280);
       y = clamp(this.player.y - 420, 180, this.world.height - 180);
       if (this.reachGrid) {
         const spawnClear = !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle));
-        const spawnReachable = this.reachLabelAt(x, y) === this.reachGrid.best.label;
-        if (!spawnClear || !spawnReachable) {
+        if (!spawnClear || !this.spawnReachable(x, y, stats.radius)) {
           const fallback = this.findSpawnPoint(stats);
           x = fallback.x;
           y = fallback.y;
@@ -3360,6 +3480,23 @@ ui.customMapEntry.addEventListener("click", () => {
       if (enemy.spawnIn > 0) {
         enemy.spawnIn -= dt;
         continue;
+      }
+      if (this.reachGrid && this.runTime >= (enemy._pocketCheckAt || 0)) {
+        enemy._pocketCheckAt = this.runTime + 1.5;
+        if (!this.spawnReachable(enemy.x, enemy.y, enemy.radius + 10)) {
+          const point = this.findSpawnPoint(ENEMY_STATS[enemy.type] || ENEMY_STATS.chaser);
+          enemy.x = point.x;
+          enemy.y = point.y;
+          enemy.prevX = enemy.x;
+          enemy.prevY = enemy.y;
+          enemy.spawnIn = 0.45;
+          enemy.navigationWaypoints = [];
+          enemy._navPath = null;
+          enemy._navRequest = null;
+          enemy._navDirty = true;
+          this.spawnRing(enemy.x, enemy.y, enemy.radius, enemy.radius + 30, "#ff6178", 0.4);
+          continue;
+        }
       }
       if (enemy.type === "boss") this.updateBoss(enemy, dt);
       else if (enemy.type === "prism") this.updatePrism(enemy, dt, slowFactor);
@@ -3610,8 +3747,8 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
         this.fireEnemyBullet(enemy, i * Math.PI * 2 / count + 0.2, 145, 5, Math.round(10 * dmgMul));
       }
       if (this.enemies.length < 11) {
-        this.spawnEnemy("chaser", enemy.x - 62, enemy.y + 20);
-        this.spawnEnemy("chaser", enemy.x + 62, enemy.y + 20);
+        this.spawnEnemy("chaser", enemy.x - 62, enemy.y + 20, enemy);
+        this.spawnEnemy("chaser", enemy.x + 62, enemy.y + 20, enemy);
         this.waveTotal += 2;
       }
     }
@@ -3850,8 +3987,8 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
       this.pickups.push({ type: "health", x: enemy.x, y: enemy.y, vx: random(-35, 35), vy: random(-35, 35), value: 16, life: 12, phase: 0 });
     }
     if (enemy.type === "splitter") {
-      this.spawnEnemy("mite", enemy.x - 12, enemy.y);
-      this.spawnEnemy("mite", enemy.x + 12, enemy.y);
+      this.spawnEnemy("mite", enemy.x - 12, enemy.y, enemy);
+      this.spawnEnemy("mite", enemy.x + 12, enemy.y, enemy);
       this.waveTotal += 2;
     }
     this.audio.kill(enemy.radius > 17 ? 1.2 : 1.8);

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const WORLD_WIDTH = 2400;
-  const WORLD_HEIGHT = 1600;
+  const WORLD_HEIGHT = 1620;
   const BLOCKS = {
     h: { width: 240, height: 60 },
     v: { width: 240, height: 60, rot: 90 }
@@ -52,6 +52,7 @@
     back: byId("custom-select-back-btn"),
     createBtn: byId("custom-create-btn"),
     importBtn: byId("custom-import-btn"),
+    randomEntry: byId("custom-random-entry"),
     dialog: byId("editor-dialog-overlay"),
     dialogPanel: byId("editor-dialog-panel"),
     dialogEyebrow: byId("editor-dialog-eyebrow"),
@@ -96,7 +97,7 @@
   }
 
   const clampNum = (value, min, max) => Math.min(max, Math.max(min, value));
-  const CODE_PREFIX = "SRB1.";
+  const CODE_PREFIX = "SRB2.";
   const CODE_KEY = [0x5a, 0xa5, 0x3c, 0xc3];
 
   function checksum16(bytes) {
@@ -122,10 +123,10 @@
     const blocks = (entry.blocks || []).slice(0, 255);
     push(blocks.length, 8);
     for (const block of blocks) {
-      push(Math.round(clampNum(Number(block.x) || 0, 0, 2400) / 5), 9);
-      push(Math.round(clampNum(Number(block.y) || 0, 0, 1600) / 5), 9);
+      push(Math.round((clampNum(Number(block.x) || 0, -90, 2400) + 90) / 5), 9);
+      push(Math.round(clampNum(Number(block.y) || 0, 0, 1620) / 5), 9);
       push(Math.round(clampNum(Number(block.width) || 0, 0, 2400) / 5), 9);
-      push(Math.round(clampNum(Number(block.height) || 0, 0, 1600) / 5), 9);
+      push(Math.round(clampNum(Number(block.height) || 0, 0, 1620) / 5), 9);
       push(((Math.round((Number(block.rot) || 0) / 15) % 24) + 24) % 24, 5);
     }
     const data = [];
@@ -203,8 +204,8 @@
       const qh = read(9);
       const rot = read(5);
       if (qx === null || qy === null || qw === null || qh === null || rot === null) return null;
-      if (qx > 480 || qy > 320 || qw > 480 || qh > 320 || qw < 1 || qh < 1) return null;
-      blocks.push({ x: qx * 5, y: qy * 5, width: qw * 5, height: qh * 5, rot: rot * 15 });
+      if (qx > 498 || qy > 324 || qw > 480 || qh > 324 || qw < 1 || qh < 1) return null;
+      blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: rot * 15 });
     }
     return { name, desc, blocks };
   }
@@ -264,6 +265,7 @@
       this.selected = null;
       this.group = [];
       this.groupBounds = null;
+      this.lastPlaced = null;
       this.past = [];
       this.future = [];
       this.dirty = false;
@@ -312,9 +314,7 @@
       els.startBtn.addEventListener("click", () => this.startSelected());
       els.createBtn.addEventListener("click", () => this.openCreateMap());
       els.importBtn.addEventListener("click", () => this.importMap());
-      els.selectOverlay.addEventListener("click", (event) => {
-        if (event.target === els.selectOverlay) this.closeSelect();
-      });
+      els.randomEntry.addEventListener("click", () => this.selectCustomRandom());
       els.dialog.addEventListener("click", (event) => {
         if (event.target === els.dialog) this.resolveDialog(null);
       });
@@ -375,6 +375,7 @@
       this.selected = null;
       this.group = [];
       this.groupBounds = null;
+      this.lastPlaced = null;
       this.past = [];
       this.future = [];
       this.dirty = false;
@@ -428,7 +429,7 @@
       for (const map of maps) {
         const card = document.createElement("div");
         card.className = `map-card custom-map-card${map.id === this.customSelectedId ? " selected" : ""}${map.id === this.detailMapId ? " detail" : ""}`;
-        card.style.setProperty("--swatch", "#ad8cff");
+        card.style.setProperty("--swatch", "#64fbd2");
         card.setAttribute("role", "button");
         card.setAttribute("aria-pressed", String(map.id === this.customSelectedId));
         card.tabIndex = 0;
@@ -468,35 +469,6 @@
           }
         });
         els.cards.appendChild(card);
-      }
-      if (maps.length) {
-        const randomCard = document.createElement("div");
-        randomCard.className = `map-card custom-map-card random-card${this.detailMapId === "random" ? " detail" : ""}`;
-        randomCard.style.setProperty("--swatch", "#ad8cff");
-        randomCard.setAttribute("role", "button");
-        randomCard.tabIndex = 0;
-        randomCard.innerHTML = `<span class="card-face"><span class="map-swatch"></span><strong>${I18N.t("map.random.name")}</strong><p>${I18N.t("map.random.desc")}</p></span>`;
-        const randomDetail = document.createElement("span");
-        randomDetail.className = "card-detail";
-        randomDetail.innerHTML = `<span class="detail-left"><strong class="detail-title">${I18N.t("map.random.name")}</strong><p>${I18N.t("map.random.desc")}</p></span>`;
-        const randomCanvas = document.createElement("canvas");
-        randomCanvas.className = "detail-preview";
-        randomCanvas.width = 192;
-        randomCanvas.height = 128;
-        window.mapPreview.drawRandom(randomCanvas);
-        const randomPreviewBox = document.createElement("span");
-        randomPreviewBox.className = "detail-right";
-        randomPreviewBox.appendChild(randomCanvas);
-        randomDetail.appendChild(randomPreviewBox);
-        randomCard.appendChild(randomDetail);
-        randomCard.addEventListener("click", () => this.selectCustomRandom());
-        randomCard.addEventListener("keydown", (event) => {
-          if (event.code === "Enter" || event.code === "Space") {
-            event.preventDefault();
-            this.selectCustomRandom();
-          }
-        });
-        els.cards.appendChild(randomCard);
       }
       els.startBtn.disabled = !this.customSelectedId;
     }
@@ -562,7 +534,7 @@
           continue;
         }
         const maps = loadMaps();
-        maps.push({ id: newMapId(), name: uniqueName(decoded.name), desc: decoded.desc, blocks: decoded.blocks });
+        maps.push({ id: newMapId(), name: uniqueName(decoded.name), desc: decoded.desc, blocks: decoded.blocks, createdAt: Date.now() });
         saveMaps(maps);
         game.reloadCustomMaps();
         this.renderCards();
@@ -749,6 +721,7 @@
       const blocks = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0 }));
       if (existing) {
         existing.blocks = blocks;
+        existing.updatedAt = Date.now();
       } else {
         const choice = await this.showDialog({
           eyebrow: "CUSTOM SECTOR",
@@ -765,8 +738,9 @@
         if (!name) return false;
         const desc = els.descInput.value.trim();
         const id = newMapId();
-        maps.push({ id, name: uniqueName(name), desc, blocks });
+        maps.push({ id, name: uniqueName(name), desc, blocks, createdAt: Date.now() });
         this.editingMapId = id;
+        this.customSelectedId = id;
       }
       saveMaps(maps);
       game.reloadCustomMaps();
@@ -904,6 +878,20 @@
       return this.ctrlHeld ? ROT_SNAP_COARSE : ROT_SNAP_FINE;
     }
 
+    placeGhost() {
+      const ghost = this.ghostBlock();
+      this.blocks.push({ ...ghost, id: this.nextBlockId });
+      this.nextBlockId += 1;
+      this.lastPlaced = this.blocks[this.blocks.length - 1];
+      this.dirty = true;
+    }
+
+    blocksOverlap(a, b) {
+      const ra = this.rotatedAABB(a);
+      const rb = this.rotatedAABB(b);
+      return ra.x < rb.x + rb.width && ra.x + ra.width > rb.x && ra.y < rb.y + rb.height && ra.y + ra.height > rb.y;
+    }
+
     ghostBlock() {
       const point = this.worldPoint();
       const spec = BLOCKS[this.material];
@@ -918,15 +906,65 @@
       return { id: 0, x: centerX - hw, y: centerY - hh, width: spec.width, height: spec.height, rot: spec.rot || 0 };
     }
 
-    fullyOverlaps(a, b) {
-      const cxA = a.x + a.width / 2;
-      const cyA = a.y + a.height / 2;
-      const cxB = b.x + b.width / 2;
-      const cyB = b.y + b.height / 2;
-      if (Math.abs(cxA - cxB) > 0.5 || Math.abs(cyA - cyB) > 0.5) return false;
-      if (Math.abs(a.width - b.width) > 0.5 || Math.abs(a.height - b.height) > 0.5) return false;
-      const diff = ((((a.rot || 0) - (b.rot || 0)) % 180) + 180) % 180;
-      return diff < 0.5;
+    containsPoint(block, px, py) {
+      const hw = block.width / 2;
+      const hh = block.height / 2;
+      const dx = px - (block.x + hw);
+      const dy = py - (block.y + hh);
+      const rad = (block.rot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const lx = dx * cos + dy * sin;
+      const ly = -dx * sin + dy * cos;
+      return Math.abs(lx) <= hw && Math.abs(ly) <= hh;
+    }
+
+    coveredBy(block, candidates) {
+      const hw = block.width / 2;
+      const hh = block.height / 2;
+      const rad = (block.rot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const step = Math.max(5, Math.min(block.width, block.height) / 24);
+      const xSteps = Math.max(1, Math.round(block.width / step));
+      const ySteps = Math.max(1, Math.round(block.height / step));
+      for (let xi = 0; xi <= xSteps; xi += 1) {
+        for (let yi = 0; yi <= ySteps; yi += 1) {
+          const lx = -hw + (block.width * xi) / xSteps;
+          const ly = -hh + (block.height * yi) / ySteps;
+          const wx = block.x + hw + lx * cos - ly * sin;
+          const wy = block.y + hh + lx * sin + ly * cos;
+          if (!candidates.some((candidate) => this.containsPoint(candidate, wx, wy))) return false;
+        }
+      }
+      return true;
+    }
+
+    pruneCovered() {
+      const blocks = this.blocks;
+      const removal = [];
+      for (let i = 0; i < blocks.length; i += 1) {
+        const block = blocks[i];
+        const aabb = this.rotatedAABB(block);
+        const candidates = [];
+        for (let j = i + 1; j < blocks.length; j += 1) {
+          const other = blocks[j];
+          const otherBox = this.rotatedAABB(other);
+          if (otherBox.x <= aabb.x + aabb.width && otherBox.x + otherBox.width >= aabb.x && otherBox.y <= aabb.y + aabb.height && otherBox.y + otherBox.height >= aabb.y) {
+            candidates.push(other);
+          }
+        }
+        if (candidates.length && this.coveredBy(block, candidates)) removal.push(block);
+      }
+      for (const block of removal) this.removeBlock(block);
+    }
+
+    clampHandlePoint(x, y) {
+      const m = 12 / this.scale;
+      return {
+        x: Math.min(WORLD_WIDTH - m, Math.max(m, x)),
+        y: Math.min(WORLD_HEIGHT - m, Math.max(m, y))
+      };
     }
 
     handlePos(block) {
@@ -936,10 +974,7 @@
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
       const ly = -(hh + HANDLE_OFFSET_PX / this.scale);
-      return {
-        x: block.x + hw - ly * sin,
-        y: block.y + hh + ly * cos
-      };
+      return this.clampHandlePoint(block.x + hw - ly * sin, block.y + hh + ly * cos);
     }
 
     handleHitRadius() {
@@ -971,15 +1006,11 @@
       els.canvas.setPointerCapture(event.pointerId);
       const point = this.worldPoint();
       if (this.tool === "place") {
-        const ghost = this.ghostBlock();
-        if (this.blocks.some((block) => this.fullyOverlaps(block, ghost))) {
-          toast(I18N.t("custom.overlapBlocked"), "#ff9dab");
-          return;
-        }
         this.pushHistory();
-        this.blocks.push({ ...ghost, id: this.nextBlockId });
-        this.nextBlockId += 1;
-        this.dirty = true;
+        this.placeGhost();
+        this.drag = { mode: "place" };
+        this.pruneCovered();
+        if (this.lastPlaced && !this.blocks.includes(this.lastPlaced)) this.lastPlaced = null;
         this.updateToolUI();
       } else if (this.tool === "erase") {
         const hit = this.hitBlockAt(point.x, point.y);
@@ -1005,6 +1036,15 @@
             this.updateToolUI();
             return;
           }
+          if (Math.hypot(point.x - this.groupBounds.copy.x, point.y - this.groupBounds.copy.y) <= this.handleHitRadius()) {
+            this.pushHistory();
+            const copies = this.duplicateBlocks(this.group);
+            this.group = copies;
+            this.selected = null;
+            this.computeGroupBounds();
+            this.updateToolUI();
+            return;
+          }
         }
         const handle = this.selected ? this.handlePos(this.selected) : null;
         if (handle && Math.hypot(point.x - handle.x, point.y - handle.y) <= this.handleHitRadius()) {
@@ -1017,8 +1057,21 @@
           this.removeBlock(this.selected);
           return;
         }
+        const copyBtn = this.selected ? this.copyPos(this.selected) : null;
+        if (copyBtn && Math.hypot(point.x - copyBtn.x, point.y - copyBtn.y) <= this.handleHitRadius()) {
+          this.pushHistory();
+          const copies = this.duplicateBlocks([this.selected]);
+          this.selectSingle(copies[0]);
+          this.updateToolUI();
+          return;
+        }
         const hit = this.hitBlockAt(point.x, point.y);
         if (hit) {
+          if (event.shiftKey) {
+            this.toggleSelect(hit);
+            this.updateToolUI();
+            return;
+          }
           if (this.group.includes(hit)) {
             this.drag = { mode: "groupMove", startX: point.x, startY: point.y, startBlocks: this.group.map((block) => ({ ...block })), moved: false, historyPushed: false };
           } else {
@@ -1026,7 +1079,7 @@
             this.drag = { block: hit, mode: "move", startX: point.x, startY: point.y, origX: hit.x, origY: hit.y, moved: false, historyPushed: false };
           }
         } else {
-          this.drag = { mode: "box", startX: point.x, startY: point.y, endX: point.x, endY: point.y };
+          this.drag = { mode: "box", startX: point.x, startY: point.y, endX: point.x, endY: point.y, additive: event.shiftKey };
         }
         this.updateToolUI();
       }
@@ -1056,6 +1109,15 @@
         }
         return;
       }
+      if (drag.mode === "place") {
+        const ghost = this.ghostBlock();
+        if (!this.lastPlaced || !this.blocksOverlap(ghost, this.lastPlaced)) {
+          this.placeGhost();
+          this.pruneCovered();
+          if (this.lastPlaced && !this.blocks.includes(this.lastPlaced)) this.lastPlaced = null;
+        }
+        return;
+      }
       if (drag.mode === "box") {
         drag.endX = point.x;
         drag.endY = point.y;
@@ -1080,7 +1142,6 @@
           return { x: nx - block.width / 2, y: ny - block.height / 2, width: block.width, height: block.height, rot: (((block.rot || 0) + snapped) % 360 + 360) % 360 };
         });
         if (candidates.some((candidate) => !this.inWorld(candidate))) return;
-        if (candidates.some((candidate) => this.blocks.some((other) => !this.group.includes(other) && this.fullyOverlaps(other, candidate)))) return;
         if (!drag.historyPushed) {
           this.pushHistory();
           drag.historyPushed = true;
@@ -1104,16 +1165,12 @@
         const rotSnap = this.getRotSnap();
         const snapped = ((Math.round(deg / rotSnap) * rotSnap) % 360 + 360) % 360;
         if (snapped !== (block.rot || 0)) {
-          const candidate = { ...block, rot: snapped };
-          const blocked = this.blocks.some((other) => other !== block && this.fullyOverlaps(other, candidate));
-          if (!blocked) {
-            if (!drag.historyPushed) {
-              this.pushHistory();
-              drag.historyPushed = true;
-            }
-            block.rot = snapped;
-            this.dirty = true;
+          if (!drag.historyPushed) {
+            this.pushHistory();
+            drag.historyPushed = true;
           }
+          block.rot = snapped;
+          this.dirty = true;
         }
         return;
       }
@@ -1133,7 +1190,6 @@
           rot: block.rot || 0
         }));
         if (candidates.some((candidate) => !this.inWorld(candidate))) return;
-        if (candidates.some((candidate) => this.blocks.some((other) => !this.group.includes(other) && this.fullyOverlaps(other, candidate)))) return;
         if (!drag.historyPushed) {
           this.pushHistory();
           drag.historyPushed = true;
@@ -1160,21 +1216,23 @@
       const cx = Math.min(WORLD_WIDTH - extX, Math.max(extX, Math.round((drag.origX + hw + dx) / snap) * snap));
       const cy = Math.min(WORLD_HEIGHT - extY, Math.max(extY, Math.round((drag.origY + hh + dy) / snap) * snap));
       const candidate = { x: cx - hw, y: cy - hh, width: block.width, height: block.height, rot: block.rot || 0 };
-      const blocked = this.blocks.some((other) => other !== block && this.fullyOverlaps(other, candidate));
-      if (!blocked) {
-        if (!drag.historyPushed) {
-          this.pushHistory();
-          drag.historyPushed = true;
-        }
-        block.x = candidate.x;
-        block.y = candidate.y;
-        this.dirty = true;
+      if (!drag.historyPushed) {
+        this.pushHistory();
+        drag.historyPushed = true;
       }
+      block.x = candidate.x;
+      block.y = candidate.y;
+      this.dirty = true;
     }
 
     onPointerUp() {
-      if (this.drag && this.drag.mode === "box") this.finishBoxSelection();
-      if (this.drag && this.drag.mode === "groupRotate") this.computeGroupBounds();
+      const drag = this.drag;
+      if (drag && drag.mode === "box") this.finishBoxSelection();
+      if (drag && drag.mode === "place") {
+        this.pruneCovered();
+        this.updateToolUI();
+      }
+      if (drag && drag.mode === "groupRotate") this.computeGroupBounds();
       this.drag = null;
     }
 
@@ -1189,6 +1247,15 @@
         const cy = block.y + block.height / 2;
         return cx >= x && cx <= x + width && cy >= y && cy <= y + height;
       });
+      if (drag.additive) {
+        const merged = this.currentSelection();
+        for (const block of inside) {
+          if (!merged.includes(block)) merged.push(block);
+        }
+        this.applySelectionList(merged);
+        this.updateToolUI();
+        return;
+      }
       if (inside.length >= 2) {
         this.selected = null;
         this.group = inside;
@@ -1199,6 +1266,34 @@
         this.clearSelection();
       }
       this.updateToolUI();
+    }
+
+    currentSelection() {
+      const list = this.selected ? [this.selected] : [];
+      for (const block of this.group) {
+        if (!list.includes(block)) list.push(block);
+      }
+      return list;
+    }
+
+    applySelectionList(list) {
+      if (list.length >= 2) {
+        this.selected = null;
+        this.group = list;
+        this.computeGroupBounds();
+      } else if (list.length === 1) {
+        this.selectSingle(list[0]);
+      } else {
+        this.clearSelection();
+      }
+    }
+
+    toggleSelect(block) {
+      const list = this.currentSelection();
+      const idx = list.indexOf(block);
+      if (idx >= 0) list.splice(idx, 1);
+      else list.push(block);
+      this.applySelectionList(list);
     }
 
     selectSingle(block) {
@@ -1234,8 +1329,9 @@
       this.groupBounds = {
         cx,
         cy: (minY + maxY) / 2,
-        handle: { x: cx, y: minY - offset },
-        trash: { x: cx, y: maxY + offset }
+        handle: this.clampHandlePoint(cx, minY - offset),
+        trash: this.clampHandlePoint(cx, maxY + offset),
+        copy: this.clampHandlePoint(maxX + offset, (minY + maxY) / 2)
       };
     }
 
@@ -1269,15 +1365,42 @@
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
       const ly = hh + HANDLE_OFFSET_PX / this.scale;
-      return {
-        x: block.x + hw - ly * sin,
-        y: block.y + hh + ly * cos
-      };
+      return this.clampHandlePoint(block.x + hw - ly * sin, block.y + hh + ly * cos);
+    }
+
+    copyPos(block) {
+      const hw = block.width / 2;
+      const hh = block.height / 2;
+      const rad = (block.rot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const lx = hw + HANDLE_OFFSET_PX / this.scale;
+      return this.clampHandlePoint(block.x + hw + lx * cos, block.y + hh + lx * sin);
+    }
+
+    duplicateBlocks(source) {
+      const snap = this.getSnap();
+      const copies = source.map((block) => {
+        const copy = { ...block, id: this.nextBlockId };
+        this.nextBlockId += 1;
+        const rotated = ((copy.rot || 0) % 180) !== 0;
+        const extX = rotated ? copy.height / 2 : copy.width / 2;
+        const extY = rotated ? copy.width / 2 : copy.height / 2;
+        const cx = Math.min(WORLD_WIDTH - extX, Math.max(extX, copy.x + copy.width / 2 + snap));
+        const cy = Math.min(WORLD_HEIGHT - extY, Math.max(extY, copy.y + copy.height / 2 + snap));
+        copy.x = cx - copy.width / 2;
+        copy.y = cy - copy.height / 2;
+        return copy;
+      });
+      this.blocks.push(...copies);
+      this.dirty = true;
+      return copies;
     }
 
     removeBlock(block) {
       this.blocks.splice(this.blocks.indexOf(block), 1);
       if (this.selected === block) this.selected = null;
+      if (this.lastPlaced === block) this.lastPlaced = null;
       if (this.group.includes(block)) {
         this.group = [];
         this.groupBounds = null;
@@ -1301,6 +1424,7 @@
       this.blocks = list.map((block) => ({ ...block }));
       this.nextBlockId = this.blocks.reduce((max, block) => Math.max(max, block.id), 0) + 1;
       this.clearSelection();
+      this.pruneCovered();
       this.dirty = true;
       this.updateToolUI();
     }
@@ -1337,19 +1461,21 @@
       context.save();
       context.translate(this.offsetX, this.offsetY);
       context.scale(this.scale, this.scale);
-      context.lineWidth = 1 / this.scale;
-      context.strokeStyle = "rgba(150, 120, 200, 0.07)";
-      context.beginPath();
-      for (let x = 0; x <= WORLD_WIDTH; x += 60) {
-        context.moveTo(x, 0);
-        context.lineTo(x, WORLD_HEIGHT);
+      if (typeof game === "undefined" || game.editorGrid) {
+        context.lineWidth = 1 / this.scale;
+        context.strokeStyle = "rgba(100, 251, 210, 0.06)";
+        context.beginPath();
+        for (let x = 0; x <= WORLD_WIDTH; x += 60) {
+          context.moveTo(x, 0);
+          context.lineTo(x, WORLD_HEIGHT);
+        }
+        for (let y = 0; y <= WORLD_HEIGHT; y += 60) {
+          context.moveTo(0, y);
+          context.lineTo(WORLD_WIDTH, y);
+        }
+        context.stroke();
       }
-      for (let y = 0; y <= WORLD_HEIGHT; y += 60) {
-        context.moveTo(0, y);
-        context.lineTo(WORLD_WIDTH, y);
-      }
-      context.stroke();
-      context.strokeStyle = "rgba(173, 140, 255, 0.4)";
+      context.strokeStyle = "rgba(100, 251, 210, 0.4)";
       context.lineWidth = 2 / this.scale;
       context.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       for (const block of this.blocks) {
@@ -1362,9 +1488,11 @@
         if (this.selected) {
           this.drawRotationHandle(context, this.selected);
           this.drawTrashIcon(context, this.trashPos(this.selected));
+          this.drawCopyIcon(context, this.copyPos(this.selected));
         } else if (this.group.length >= 2 && this.groupBounds) {
           this.drawGroupHandle(context, this.groupBounds);
           this.drawTrashIcon(context, this.groupBounds.trash);
+          this.drawCopyIcon(context, this.groupBounds.copy);
         }
         if (this.drag && this.drag.mode === "box") {
           const x = Math.min(this.drag.startX, this.drag.endX);
@@ -1380,8 +1508,7 @@
       }
       if (this.tool === "place" && this.pointer.inside) {
         const ghost = this.ghostBlock();
-        const blocked = this.blocks.some((block) => this.fullyOverlaps(block, ghost));
-        this.drawBlock(context, ghost, false, 0.5, blocked ? "#ff6178" : "#64fbd2");
+        this.drawBlock(context, ghost, false, 0.5, "#64fbd2");
       }
       context.restore();
     }
@@ -1393,25 +1520,25 @@
       const hh = block.height / 2;
       context.translate(block.x + hw, block.y + hh);
       context.rotate((block.rot || 0) * Math.PI / 180);
-      context.fillStyle = selected ? "#1d3a38" : "#152334";
+      context.fillStyle = selected ? "#1b2f42" : "#152334";
       context.fillRect(-hw, -hh, block.width, block.height);
-      context.strokeStyle = outline || (selected ? "#64fbd2" : "#ad8cff");
+      context.strokeStyle = outline || (selected ? "#65a9ff" : "#64fbd2");
       context.lineWidth = (selected ? 3 : 2) / this.scale;
       context.strokeRect(-hw + 1.5, -hh + 1.5, block.width - 3, block.height - 3);
-      context.fillStyle = selected ? "rgba(100, 251, 210, 0.5)" : "rgba(255, 209, 102, 0.32)";
+      context.fillStyle = selected ? "rgba(101, 169, 255, 0.5)" : "rgba(255, 209, 102, 0.32)";
       for (let x = -hw + 12; x < hw - 12; x += 28) context.fillRect(x, -hh + 8, 14, 3);
       context.restore();
     }
 
     drawHandleKnob(context, x, y) {
-      context.fillStyle = "#64fbd2";
+      context.fillStyle = "#65a9ff";
       context.beginPath();
       context.arc(x, y, 9 / this.scale, 0, Math.PI * 2);
       context.fill();
       const r = 4.5 / this.scale;
       const start = -Math.PI * 0.6;
       const end = Math.PI * 1.05;
-      context.strokeStyle = "#0d2a24";
+      context.strokeStyle = "#122a44";
       context.lineWidth = 1.7 / this.scale;
       context.lineCap = "round";
       context.beginPath();
@@ -1433,7 +1560,7 @@
       const cx = block.x + block.width / 2;
       const cy = block.y + block.height / 2;
       const handle = this.handlePos(block);
-      context.strokeStyle = "rgba(100, 251, 210, 0.7)";
+      context.strokeStyle = "rgba(101, 169, 255, 0.7)";
       context.lineWidth = 2 / this.scale;
       context.beginPath();
       context.moveTo(cx, cy);
@@ -1443,13 +1570,28 @@
     }
 
     drawGroupHandle(context, bounds) {
-      context.strokeStyle = "rgba(100, 251, 210, 0.7)";
+      context.strokeStyle = "rgba(101, 169, 255, 0.7)";
       context.lineWidth = 2 / this.scale;
       context.beginPath();
       context.moveTo(bounds.cx, bounds.cy);
       context.lineTo(bounds.handle.x, bounds.handle.y);
       context.stroke();
       this.drawHandleKnob(context, bounds.handle.x, bounds.handle.y);
+    }
+
+    drawCopyIcon(context, point) {
+      const x = point.x;
+      const y = point.y;
+      const u = 1 / this.scale;
+      context.fillStyle = "#65a9ff";
+      context.beginPath();
+      context.arc(x, y, 9 * u, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = "#122a44";
+      context.lineWidth = 1.2 * u;
+      context.strokeRect(x - 4 * u, y - 4.4 * u, 5.2 * u, 6.4 * u);
+      context.fillStyle = "#122a44";
+      context.fillRect(x - 1.4 * u, y - 1.8 * u, 5.2 * u, 6.4 * u);
     }
 
     drawTrashIcon(context, point) {
@@ -1494,126 +1636,107 @@
         context.rotate((block.rot || 0) * Math.PI / 180);
         const bw = block.width * scale;
         const bh = Math.max(2, block.height * scale);
-        context.fillStyle = "#ad8cff";
+        context.fillStyle = "#64fbd2";
         context.fillRect(-bw / 2, -bh / 2, bw, bh);
         context.restore();
       }
     },
     drawBuiltin(canvas, id) {
       const context = this.prepare(canvas);
-      const w = canvas.width;
-      const h = canvas.height;
-      const cx = w / 2;
-      const cy = h / 2;
-      const ring = (x, y, r) => {
-        context.beginPath();
-        context.arc(x, y, r, 0, Math.PI * 2);
-      };
+      const scale = Math.min(canvas.width / WORLD_WIDTH, canvas.height / WORLD_HEIGHT);
+      const ox = (canvas.width - WORLD_WIDTH * scale) / 2;
+      const oy = (canvas.height - WORLD_HEIGHT * scale) / 2;
+      const X = (x) => ox + x * scale;
+      const Y = (y) => oy + y * scale;
+      const S = (v) => Math.max(1, v * scale);
+      const cx = WORLD_WIDTH / 2;
+      const cy = WORLD_HEIGHT / 2;
+      const color = id === "dock" ? "#ffd166" : id === "furnace" ? "#ff8a65" : id === "gravity" ? "#ad8cff" : id === "storm" ? "#65a9ff" : id === "matrix" ? "#7dff8a" : "#64fbd2";
+      context.fillStyle = color;
+      context.strokeStyle = color;
       if (id === "harbor") {
-        context.fillStyle = "#8ba1b4";
-        context.globalAlpha = 0.75;
-        [[34, 28, 34, 14], [124, 28, 34, 14], [34, 86, 34, 14], [124, 86, 34, 14]].forEach(([x, y, bw, bh]) => context.fillRect(x, y, bw, bh));
+        context.globalAlpha = 0.85;
+        [
+          [470, 310, 210, 48], [470, 310, 48, 190],
+          [1720, 310, 210, 48], [1882, 310, 48, 190],
+          [470, 1242, 210, 48], [470, 1100, 48, 190],
+          [1720, 1242, 210, 48], [1882, 1100, 48, 190]
+        ].forEach(([x, y, w, h]) => context.fillRect(X(x), Y(y), S(w), S(h)));
       } else if (id === "dock") {
-        context.strokeStyle = "#64fbd2";
-        [16, 30, 44].forEach((r) => {
-          context.globalAlpha = 0.9 - r * 0.013;
-          ring(cx, cy, r);
+        context.globalAlpha = 0.5;
+        context.lineWidth = 1.5;
+        [230, 420, 610].forEach((r) => {
+          context.beginPath();
+          context.arc(X(cx), Y(cy), S(r), 0, Math.PI * 2);
           context.stroke();
         });
-        context.globalAlpha = 1;
-        context.fillStyle = "#64fbd2";
-        ring(cx, cy, 4);
-        context.fill();
-        context.fillStyle = "#ffd166";
-        ring(cx + 34, cy - 18, 3.5);
-        context.fill();
+        context.globalAlpha = 0.95;
+        [{ orbit: 230, radius: 38, count: 4 }, { orbit: 420, radius: 42, count: 5 }, { orbit: 610, radius: 46, count: 6 }].forEach((ring) => {
+          for (let i = 0; i < ring.count; i += 1) {
+            const a = i * Math.PI * 2 / ring.count;
+            context.beginPath();
+            context.arc(X(cx + Math.cos(a) * ring.orbit), Y(cy + Math.sin(a) * ring.orbit), S(ring.radius), 0, Math.PI * 2);
+            context.fill();
+          }
+        });
       } else if (id === "furnace") {
-        context.fillStyle = "#ffd166";
-        context.globalAlpha = 0.28;
-        context.fillRect(cx - 14, cy - 14, 28, 28);
-        context.globalAlpha = 0.9;
-        context.strokeStyle = "#ffd166";
-        context.strokeRect(cx - 14, cy - 14, 28, 28);
-        context.fillStyle = "#ff6178";
-        ring(cx, cy - 40, 5);
-        context.fill();
-        context.strokeStyle = "#ff6178";
-        context.globalAlpha = 0.55;
-        for (let i = 1; i < 6; i += 1) {
-          const a = (Math.PI / 3) * i + Math.PI / 6;
-          ring(cx + Math.cos(a) * 40, cy + Math.sin(a) * 40, 5);
+        context.globalAlpha = 0.5;
+        context.lineWidth = 1;
+        [[300, 280, 250, 160], [1850, 280, 250, 160], [300, 1160, 250, 160], [1850, 1160, 250, 160]].forEach(([x, y, w, h]) => {
+          context.fillRect(X(x), Y(y), S(w), S(h));
+          context.strokeRect(X(x), Y(y), S(w), S(h));
+        });
+        context.globalAlpha = 0.7;
+        [[760, 520], [1200, 420], [1640, 520], [760, 1080], [1200, 1180], [1640, 1080]].forEach(([x, y]) => {
+          context.beginPath();
+          context.arc(X(x), Y(y), S(88), 0, Math.PI * 2);
+          context.fill();
           context.stroke();
-        }
+        });
       } else if (id === "gravity") {
-        context.strokeStyle = "#ad8cff";
-        context.globalAlpha = 0.9;
-        [[cx - 44, cy - 20], [cx + 44, cy - 20], [cx - 44, cy + 20], [cx + 44, cy + 20]].forEach(([x, y]) => {
-          ring(x, y, 9);
-          context.stroke();
+        context.lineWidth = 1;
+        [[420, 320], [1980, 320], [420, 1280], [1980, 1280]].forEach(([x, y]) => {
+          context.globalAlpha = 0.55;
           context.beginPath();
-          context.arc(x, y, 4.5, 0.4, Math.PI * 1.7);
+          context.arc(X(x), Y(y), S(285), 0, Math.PI * 2);
+          context.stroke();
+          context.globalAlpha = 0.9;
+          context.beginPath();
+          context.arc(X(x), Y(y), S(34), 0, Math.PI * 2);
+          context.fill();
+          const angle = Math.atan2(cy - y, cx - x);
+          context.globalAlpha = 0.4;
+          context.beginPath();
+          context.arc(X(x + Math.cos(angle) * 185), Y(y + Math.sin(angle) * 185), S(27), 0, Math.PI * 2);
+          context.fill();
+          context.globalAlpha = 0.9;
           context.stroke();
         });
-        context.fillStyle = "#ffd166";
-        ring(cx - 30, cy - 28, 3);
-        context.fill();
-        ring(cx + 30, cy + 28, 3);
-        context.fill();
       } else if (id === "storm") {
-        context.strokeStyle = "#8ba1b4";
         context.globalAlpha = 0.4;
-        [24, 42, 60, 78, 104].forEach((y) => {
-          context.beginPath();
-          context.moveTo(8, y);
-          context.lineTo(w - 8, y);
-          context.stroke();
+        context.lineWidth = 1;
+        [360, 900, 1440, 1980].forEach((x) => {
+          context.strokeRect(X(x), Y(16), S(220), S(WORLD_HEIGHT - 32));
         });
-        context.fillStyle = "#64fbd2";
-        context.globalAlpha = 0.3;
-        context.fillRect(cx - 12, 6, 24, h - 12);
-        context.globalAlpha = 0.8;
-        context.strokeStyle = "#64fbd2";
-        context.strokeRect(cx - 12, 6, 24, h - 12);
       } else if (id === "matrix") {
-        context.strokeStyle = "#ad8cff";
-        context.globalAlpha = 0.3;
-        for (let x = 16; x < w; x += 24) {
-          context.beginPath();
-          context.moveTo(x, 8);
-          context.lineTo(x, h - 8);
-          context.stroke();
+        context.globalAlpha = 0.5;
+        context.lineWidth = 1;
+        context.beginPath();
+        for (let x = 200; x < WORLD_WIDTH; x += 200) {
+          context.moveTo(X(x), Y(16));
+          context.lineTo(X(x), Y(WORLD_HEIGHT - 16));
         }
-        for (let y = 16; y < h; y += 24) {
-          context.beginPath();
-          context.moveTo(8, y);
-          context.lineTo(w - 8, y);
-          context.stroke();
+        for (let y = 200; y < WORLD_HEIGHT; y += 200) {
+          context.moveTo(X(16), Y(y));
+          context.lineTo(X(WORLD_WIDTH - 16), Y(y));
         }
-        context.fillStyle = "#64fbd2";
-        context.globalAlpha = 0.45;
-        context.fillRect(8, 40, w - 16, 14);
-        context.fillRect(88, 8, 14, h - 16);
-        context.fillStyle = "#ffd166";
-        context.globalAlpha = 0.9;
-        context.fillRect(94, 46, 3, 3);
-      } else if (id === "core") {
-        context.fillStyle = "#64fbd2";
-        context.globalAlpha = 0.12;
-        ring(cx, cy, 34);
-        context.fill();
-        context.globalAlpha = 0.9;
-        context.strokeStyle = "#64fbd2";
-        ring(cx, cy, 34);
         context.stroke();
-        context.fillStyle = "#64fbd2";
-        ring(cx, cy, 10);
-        context.fill();
       }
       context.globalAlpha = 1;
     },
     drawRandom(canvas) {
       const context = this.prepare(canvas);
-      context.fillStyle = "#ad8cff";
+      context.fillStyle = "#64fbd2";
       context.font = "700 46px 'Rajdhani', 'Segoe UI', sans-serif";
       context.textAlign = "center";
       context.textBaseline = "middle";
