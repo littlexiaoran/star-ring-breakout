@@ -1629,6 +1629,18 @@ ui.customMapEntry.addEventListener("click", () => {
     return grid;
   }
 
+  enemyApproachPoint(from, goal, radius) {
+    if (this.canEnemyTravel(from.x, from.y, goal.x, goal.y, radius)) return goal;
+    if (!goal.radius) return null;
+    const dx = goal.x - from.x;
+    const dy = goal.y - from.y;
+    const distance = Math.hypot(dx, dy);
+    const contact = radius + goal.radius - 1;
+    const scale = distance > contact ? (distance - contact) / distance : 0;
+    const point = { x: from.x + dx * scale, y: from.y + dy * scale };
+    return this.canEnemyTravel(from.x, from.y, point.x, point.y, radius) ? point : null;
+  }
+
   *planEnemyPath(enemy, target) {
     const grid = yield* this.getNavGrid(enemy.radius);
     const point = (idx) => ({ x: (idx % grid.cols) * grid.cell + grid.cell / 2, y: Math.floor(idx / grid.cols) * grid.cell + grid.cell / 2 });
@@ -1698,6 +1710,7 @@ ui.customMapEntry.addEventListener("click", () => {
     const directions = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
     let closest = startIdx;
     let reached = false;
+    let approach = null;
     let expanded = 0;
     while (open.length) {
       if (expanded++ % 16 === 0) yield;
@@ -1706,10 +1719,13 @@ ui.customMapEntry.addEventListener("click", () => {
       closed[idx] = 1;
       if (h(idx) < h(closest)) closest = idx;
       const from = point(idx);
-      if (h(idx) <= grid.cell * 1.5 && this.canEnemyTravel(from.x, from.y, target.x, target.y, enemy.radius)) {
-        closest = idx;
-        reached = true;
-        break;
+      if (h(idx) <= grid.cell * 1.5 + enemy.radius + (target.radius || 0)) {
+        approach = this.enemyApproachPoint(from, target, enemy.radius);
+        if (approach) {
+          closest = idx;
+          reached = true;
+          break;
+        }
       }
       const col = idx % grid.cols;
       const row = Math.floor(idx / grid.cols);
@@ -1741,7 +1757,7 @@ ui.customMapEntry.addEventListener("click", () => {
     }
     path.push({ x: enemy.x, y: enemy.y });
     path.reverse();
-    if (reached) path.push({ x: target.x, y: target.y });
+    if (reached) path.push({ x: approach.x, y: approach.y });
     return { path: yield* this.smoothPath(path, enemy.radius), reached };
   }
 
@@ -1780,42 +1796,51 @@ ui.customMapEntry.addEventListener("click", () => {
       enemy._navPath = null;
       enemy._navRequest = null;
     }
-    if (this.canEnemyTravel(enemy.x, enemy.y, goal.x, goal.y, enemy.radius)) {
+    const direct = this.enemyApproachPoint(enemy, goal, enemy.radius);
+    if (direct) {
       enemy._navPath = null;
       enemy._navRequest = null;
       enemy._navDirty = false;
-      return goal;
+      enemy._navFailures = 0;
+      return direct;
     }
     const path = enemy._navPath;
     let tailBlocked = false;
     if (enemy._navReached && path?.length > 1) {
       const last = path.length - 1;
-      if (path[last].x !== goal.x || path[last].y !== goal.y) {
+      if (enemy._navGoal?.x !== goal.x || enemy._navGoal?.y !== goal.y) {
         const from = enemy._navIdx >= last ? enemy : path[last - 1];
-        if (this.canEnemyTravel(from.x, from.y, goal.x, goal.y, enemy.radius)) path[last] = { x: goal.x, y: goal.y };
-        else tailBlocked = true;
+        const approach = this.enemyApproachPoint(from, goal, enemy.radius);
+        if (approach) {
+          path[last] = { x: approach.x, y: approach.y };
+          enemy._navGoal = { x: goal.x, y: goal.y };
+        } else tailBlocked = true;
       }
     }
     let waypoint = path?.[enemy._navIdx];
     while (waypoint && Math.hypot(waypoint.x - enemy.x, waypoint.y - enemy.y) < 3) {
       const next = path[enemy._navIdx + 1];
-      if (next && !this.canEnemyTravel(enemy.x, enemy.y, next.x, next.y, enemy.radius)) break;
+      if (next && !this.canEnemyTravel(enemy.x, enemy.y, next.x, next.y, enemy.radius)) {
+        if (Math.hypot(waypoint.x - enemy.x, waypoint.y - enemy.y) < 0.1) enemy._navDirty = true;
+        break;
+      }
       enemy._navIdx += 1;
       waypoint = next;
     }
     const blocked = waypoint && !this.canEnemyTravel(enemy.x, enemy.y, waypoint.x, waypoint.y, enemy.radius);
     const displaced = !waypoint && enemy._navStop && Math.hypot(enemy.x - enemy._navStop.x, enemy.y - enemy._navStop.y) > 24;
     const goalDistance = enemy._navGoal ? Math.hypot(goal.x - enemy._navGoal.x, goal.y - enemy._navGoal.y) : Infinity;
-    const failedGoalChanged = !enemy._navReached && goalDistance >= 1 && this.runTime >= (enemy._navRetryAt || 0);
-    if (!path || blocked || displaced || tailBlocked || goalDistance > 96 || failedGoalChanged || enemy._navDirty) {
+    const retryReady = this.runTime >= (enemy._navRetryAt || 0);
+    const retry = retryReady && (!waypoint || (!enemy._navReached && goalDistance >= 15));
+    if (!path || blocked || displaced || tailBlocked || goalDistance > 96 || retry || enemy._navDirty) {
       if (!enemy._navRequest) {
-        enemy._navRequest = { enemy, goal: { x: goal.x, y: goal.y }, obstacles: this.obstacles };
+        enemy._navRequest = { enemy, goal: { x: goal.x, y: goal.y, radius: goal.radius }, obstacles: this.obstacles };
         this._navQueue.push(enemy._navRequest);
       }
     }
     if (enemy._navRequest) {
       enemy._navRequest.waiting = !!blocked || !waypoint;
-      enemy._navRequest.latestGoal = { x: goal.x, y: goal.y };
+      enemy._navRequest.latestGoal = { x: goal.x, y: goal.y, radius: goal.radius };
       if (!enemy._navRequest.iterator) enemy._navRequest.goal = enemy._navRequest.latestGoal;
     }
     return !blocked && waypoint ? waypoint : enemy;
@@ -1838,12 +1863,6 @@ ui.customMapEntry.addEventListener("click", () => {
       if (!job) return;
       const enemy = job.enemy;
       if (enemy.dead || enemy._navRequest !== job || job.obstacles !== this.obstacles) {
-        this._navJob = null;
-        continue;
-      }
-      if (job.iterator && this._navCache?.[enemy.radius] && Math.hypot(job.latestGoal.x - job.goal.x, job.latestGoal.y - job.goal.y) > 96) {
-        enemy._navRequest = { enemy, goal: job.latestGoal, latestGoal: job.latestGoal, waiting: job.waiting, obstacles: this.obstacles };
-        this._navQueue.push(enemy._navRequest);
         this._navJob = null;
         continue;
       }
@@ -1871,7 +1890,8 @@ ui.customMapEntry.addEventListener("click", () => {
       enemy._navGoal = job.goal;
       enemy._navStop = path.at(-1) || job.start;
       enemy._navReached = reached;
-      enemy._navRetryAt = this.runTime + 0.4;
+      enemy._navFailures = reached ? 0 : Math.min((enemy._navFailures || 0) + 1, 4);
+      enemy._navRetryAt = this.runTime + (reached ? 0.4 : Math.min(3, 0.4 * 2 ** enemy._navFailures)) + (enemy.id % 5) * 0.07;
       enemy._navDirty = false;
     }
   }
