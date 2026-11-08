@@ -2364,6 +2364,30 @@ ui.customMapEntry.addEventListener("click", () => {
     return !!grid.reach[gy * grid.cols + gx];
   }
 
+  pocketReachable(x, y, radius) {
+    if (!this.reachGrid || !this.player) return true;
+    const clearance = radius;
+    let grid = this.spawnReach.get(clearance);
+    if (!grid) {
+      grid = this.buildSpawnReach(clearance);
+      this.spawnReach.set(clearance, grid);
+    }
+    const test = (px, py) => {
+      const gx = Math.max(0, Math.min(grid.cols - 1, Math.floor(px / grid.cell)));
+      const gy = Math.max(0, Math.min(grid.rows - 1, Math.floor(py / grid.cell)));
+      return !!grid.reach[gy * grid.cols + gx];
+    };
+    if (test(x, y)) return true;
+    const step = grid.cell;
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        if (dx === 0 && dy === 0) continue;
+        if (test(x + dx * step, y + dy * step)) return true;
+      }
+    }
+    return false;
+  }
+
   findPlayerSpawn() {
     const grid = this.reachGrid;
     const centerX = this.world.width / 2;
@@ -3483,8 +3507,8 @@ ui.customMapEntry.addEventListener("click", () => {
       }
       if (this.reachGrid && this.runTime >= (enemy._pocketCheckAt || 0)) {
         enemy._pocketCheckAt = this.runTime + 1.5;
-        if (!this.spawnReachable(enemy.x, enemy.y, enemy.radius + 10)) {
-          const point = this.findSpawnPoint(ENEMY_STATS[enemy.type] || ENEMY_STATS.chaser);
+        if (!this.pocketReachable(enemy.x, enemy.y, enemy.radius)) {
+          const point = this.findSpawnPoint({ ...(ENEMY_STATS[enemy.type] || ENEMY_STATS.chaser), radius: enemy.radius });
           enemy.x = point.x;
           enemy.y = point.y;
           enemy.prevX = enemy.x;

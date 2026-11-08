@@ -84,7 +84,7 @@
   }
 
   let toastTimer = 0;
-  function toast(message, color = "#64fbd2") {
+  function toast(message, color = "#65a9ff") {
     const element = byId("powerup-toast");
     element.textContent = message;
     element.style.color = color;
@@ -351,6 +351,23 @@
         if (event.code === "Escape") {
           event.preventDefault();
           this.requestExit();
+          return;
+        }
+        if (event.code === "KeyR") {
+          event.preventDefault();
+          this.toggleMaterial();
+          return;
+        }
+        const mod = event.ctrlKey || event.metaKey;
+        if (mod && (event.code === "KeyZ")) {
+          event.preventDefault();
+          if (event.shiftKey) this.redo();
+          else this.undo();
+          return;
+        }
+        if (event.ctrlKey && !event.metaKey && (event.code === "KeyY")) {
+          event.preventDefault();
+          this.redo();
         }
       });
       window.addEventListener("keydown", (event) => {
@@ -559,7 +576,7 @@
       });
       if (choice !== "copy") return;
       const ok = await copyText(code);
-      toast(ok ? I18N.t("custom.copied") : I18N.t("custom.copyFailed"), ok ? "#64fbd2" : "#ff9dab");
+      toast(ok ? I18N.t("custom.copied") : I18N.t("custom.copyFailed"), ok ? "#65a9ff" : "#ff9dab");
     }
 
     async renameMap(id) {
@@ -838,8 +855,22 @@
     setMaterial(material) {
       if (!BLOCKS[material]) return;
       this.material = material;
+      this.refreshMaterialButton();
+    }
+
+    toggleMaterial() {
+      this.setMaterial(this.material === "h" ? "v" : "h");
+    }
+
+    refreshMaterialButton() {
       els.materials.querySelectorAll("[data-mat]").forEach((button) => {
-        button.classList.toggle("selected", button.dataset.mat === material);
+        const vertical = this.material === "v";
+        button.classList.toggle("selected", true);
+        button.classList.toggle("vertical", vertical);
+        const label = button.querySelector("span");
+        if (label) label.textContent = vertical
+          ? (I18N.lang === "zh" ? "竖条块" : "Vertical Bar")
+          : (I18N.lang === "zh" ? "横条块" : "Horizontal Bar");
       });
     }
 
@@ -871,10 +902,14 @@
     }
 
     getSnap() {
+      const grid = typeof game !== "undefined" && game.editorGrid;
+      if (grid) return this.ctrlHeld ? SNAP_FINE : SNAP_COARSE;
       return this.ctrlHeld ? SNAP_COARSE : SNAP_FINE;
     }
 
     getRotSnap() {
+      const grid = typeof game !== "undefined" && game.editorGrid;
+      if (grid) return this.ctrlHeld ? ROT_SNAP_FINE : ROT_SNAP_COARSE;
       return this.ctrlHeld ? ROT_SNAP_COARSE : ROT_SNAP_FINE;
     }
 
@@ -1379,7 +1414,7 @@
     }
 
     duplicateBlocks(source) {
-      const snap = this.getSnap();
+      const snap = 60;
       const copies = source.map((block) => {
         const copy = { ...block, id: this.nextBlockId };
         this.nextBlockId += 1;
@@ -1461,9 +1496,9 @@
       context.save();
       context.translate(this.offsetX, this.offsetY);
       context.scale(this.scale, this.scale);
-      if (typeof game === "undefined" || game.editorGrid) {
+      {
         context.lineWidth = 1 / this.scale;
-        context.strokeStyle = "rgba(100, 251, 210, 0.06)";
+        context.strokeStyle = "rgba(101, 169, 255, 0.06)";
         context.beginPath();
         for (let x = 0; x <= WORLD_WIDTH; x += 60) {
           context.moveTo(x, 0);
@@ -1475,7 +1510,7 @@
         }
         context.stroke();
       }
-      context.strokeStyle = "rgba(100, 251, 210, 0.4)";
+      context.strokeStyle = "rgba(101, 169, 255, 0.4)";
       context.lineWidth = 2 / this.scale;
       context.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       for (const block of this.blocks) {
@@ -1499,16 +1534,16 @@
           const y = Math.min(this.drag.startY, this.drag.endY);
           const w = Math.abs(this.drag.endX - this.drag.startX);
           const h = Math.abs(this.drag.endY - this.drag.startY);
-          context.fillStyle = "rgba(100, 251, 210, 0.08)";
+          context.fillStyle = "rgba(101, 169, 255, 0.08)";
           context.fillRect(x, y, w, h);
-          context.strokeStyle = "#64fbd2";
+          context.strokeStyle = "#65a9ff";
           context.lineWidth = 2 / this.scale;
           context.strokeRect(x, y, w, h);
         }
       }
       if (this.tool === "place" && this.pointer.inside) {
         const ghost = this.ghostBlock();
-        this.drawBlock(context, ghost, false, 0.5, "#64fbd2");
+        this.drawBlock(context, ghost, false, 0.5, "#65a9ff");
       }
       context.restore();
     }
@@ -1520,18 +1555,18 @@
       const hh = block.height / 2;
       context.translate(block.x + hw, block.y + hh);
       context.rotate((block.rot || 0) * Math.PI / 180);
-      context.fillStyle = selected ? "#1b2f42" : "#152334";
+      context.fillStyle = selected ? "#143f3b" : "#243850";
       context.fillRect(-hw, -hh, block.width, block.height);
-      context.strokeStyle = outline || (selected ? "#65a9ff" : "#64fbd2");
+      context.strokeStyle = outline || (selected ? "#64fbd2" : "#65a9ff");
       context.lineWidth = (selected ? 3 : 2) / this.scale;
       context.strokeRect(-hw + 1.5, -hh + 1.5, block.width - 3, block.height - 3);
-      context.fillStyle = selected ? "rgba(101, 169, 255, 0.5)" : "rgba(255, 209, 102, 0.32)";
+      context.fillStyle = selected ? "rgba(100, 251, 210, 0.5)" : "rgba(255, 209, 102, 0.32)";
       for (let x = -hw + 12; x < hw - 12; x += 28) context.fillRect(x, -hh + 8, 14, 3);
       context.restore();
     }
 
     drawHandleKnob(context, x, y) {
-      context.fillStyle = "#65a9ff";
+      context.fillStyle = "#64fbd2";
       context.beginPath();
       context.arc(x, y, 9 / this.scale, 0, Math.PI * 2);
       context.fill();
@@ -1560,7 +1595,7 @@
       const cx = block.x + block.width / 2;
       const cy = block.y + block.height / 2;
       const handle = this.handlePos(block);
-      context.strokeStyle = "rgba(101, 169, 255, 0.7)";
+      context.strokeStyle = "rgba(100, 251, 210, 0.7)";
       context.lineWidth = 2 / this.scale;
       context.beginPath();
       context.moveTo(cx, cy);
@@ -1570,7 +1605,7 @@
     }
 
     drawGroupHandle(context, bounds) {
-      context.strokeStyle = "rgba(101, 169, 255, 0.7)";
+      context.strokeStyle = "rgba(100, 251, 210, 0.7)";
       context.lineWidth = 2 / this.scale;
       context.beginPath();
       context.moveTo(bounds.cx, bounds.cy);
@@ -1583,7 +1618,7 @@
       const x = point.x;
       const y = point.y;
       const u = 1 / this.scale;
-      context.fillStyle = "#65a9ff";
+      context.fillStyle = "#64fbd2";
       context.beginPath();
       context.arc(x, y, 9 * u, 0, Math.PI * 2);
       context.fill();
@@ -1636,7 +1671,7 @@
         context.rotate((block.rot || 0) * Math.PI / 180);
         const bw = block.width * scale;
         const bh = Math.max(2, block.height * scale);
-        context.fillStyle = "#64fbd2";
+        context.fillStyle = "#65a9ff";
         context.fillRect(-bw / 2, -bh / 2, bw, bh);
         context.restore();
       }
