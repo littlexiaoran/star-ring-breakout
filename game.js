@@ -1616,13 +1616,35 @@ ui.customMapEntry.addEventListener("click", () => {
     const rows = Math.ceil(this.world.height / cell);
     const blocked = new Uint8Array(cols * rows);
     const edges = new Int8Array(cols * rows * 8).fill(-1);
+    const margin = radius + 14;
+    const clearance = radius + 1;
     for (let idx = 0; idx < blocked.length; idx += 1) {
-      if (idx % 32 === 0) yield;
+      if (idx % 256 === 0) yield;
       const x = (idx % cols) * cell + cell / 2;
       const y = Math.floor(idx / cols) * cell + cell / 2;
-      const margin = radius + 14;
-      blocked[idx] = x < margin || y < margin || x > this.world.width - margin || y > this.world.height - margin
-        || this.obstacles.some((obstacle) => distanceToRect(x, y, obstacle) <= radius + 1) ? 1 : 0;
+      blocked[idx] = x < margin || y < margin || x > this.world.width - margin || y > this.world.height - margin ? 1 : 0;
+    }
+    let checks = 0;
+    for (const obstacle of this.obstacles) {
+      const hw = obstacle.width / 2;
+      const hh = obstacle.height / 2;
+      const cx = obstacle.x + hw;
+      const cy = obstacle.y + hh;
+      const cos = Math.abs(Math.cos(obstacle.rot || 0));
+      const sin = Math.abs(Math.sin(obstacle.rot || 0));
+      const extentX = hw * cos + hh * sin + clearance;
+      const extentY = hw * sin + hh * cos + clearance;
+      const minCol = Math.max(0, Math.ceil((cx - extentX) / cell - 0.5));
+      const maxCol = Math.min(cols - 1, Math.floor((cx + extentX) / cell - 0.5));
+      const minRow = Math.max(0, Math.ceil((cy - extentY) / cell - 0.5));
+      const maxRow = Math.min(rows - 1, Math.floor((cy + extentY) / cell - 0.5));
+      for (let row = minRow; row <= maxRow; row += 1) {
+        for (let col = minCol; col <= maxCol; col += 1) {
+          if (checks++ % 32 === 0) yield;
+          const idx = row * cols + col;
+          if (!blocked[idx] && distanceToRect(col * cell + cell / 2, row * cell + cell / 2, obstacle) <= clearance) blocked[idx] = 1;
+        }
+      }
     }
     const grid = { cell, cols, rows, blocked, edges };
     this._navCache[radius] = grid;
@@ -3523,6 +3545,7 @@ ui.customMapEntry.addEventListener("click", () => {
       enemy.portalCooldown = Math.max(0, (enemy.portalCooldown || 0) - dt);
       if (enemy.spawnIn > 0) {
         enemy.spawnIn -= dt;
+        if (enemy.type !== "boss" && enemy.type !== "prism" && this.map.id !== "gravity") this.getEnemyMoveTarget(enemy, dt);
         continue;
       }
       if (this.reachGrid && this.runTime >= (enemy._pocketCheckAt || 0)) {
