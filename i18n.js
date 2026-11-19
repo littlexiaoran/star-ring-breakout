@@ -123,6 +123,10 @@ I18N.zh = {
     defeatEndless: "抵达第 {n} 关，调整构筑后再次挑战。",
     defeatEndlessReached: "到达第 {wave} 波 · 第 {round} 关"
   },
+  audio: {
+    loading: "正在加载并准备音效… {loaded}/{total}",
+    failed: "加载失败，已改用默认音效"
+  },
   toast: {
     buff: "{name} · {s} 秒"
   },
@@ -305,6 +309,10 @@ I18N.en = {
     defeatSub: "Reached wave {n} — adjust your build and try again.",
     defeatEndless: "Reached round {n} — adjust your build and try again.",
     defeatEndlessReached: "REACHED WAVE {wave} · ROUND {round}"
+  },
+  audio: {
+    loading: "Loading and preparing sounds… {loaded}/{total}",
+    failed: "Sound loading failed. Switched to standard sounds."
   },
   toast: {
     buff: "{name} · {s}s"

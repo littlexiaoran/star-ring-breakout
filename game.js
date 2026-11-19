@@ -427,6 +427,8 @@ class AudioEngine {
     } catch {}
     this.enabled = this.mode !== "none";
     this.preloaded = {};
+    this.buffers = {};
+    this.filesReady = false;
   }
 
   unlock() {
@@ -444,6 +446,7 @@ class AudioEngine {
   }
 
   setMode(mode) {
+    if (this.mode !== mode) this.stopLaserPrep();
     this.mode = mode;
     this.enabled = mode !== "none";
     try {
@@ -470,37 +473,78 @@ class AudioEngine {
     oscillator.stop(now + duration);
   }
 
-  playFile(name) {
+  playFile(name, offset = 0) {
     if (!this.enabled) return;
+    if (this.mode === "67") {
+      const buffer = this.buffers[name];
+      if (!buffer || !this.context) return;
+      const source = this.context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.context.destination);
+      source.start(0, offset);
+      return source;
+    }
     const audio = new Audio(`assets/sounds/67/${encodeURIComponent(name)}.mp3`);
     audio.play().catch(() => {});
   }
 
-  preloadFiles() {
+  preloadFiles(onProgress) {
     if (this.preloadPromise) return this.preloadPromise;
     const names = ["发射子弹", "捡到敌人的残骸", "掉血", "击败敌人", "弹出新能力框时", "胜利", "失败", "选择新能力之后", "激光", "激光预备", "冲刺"];
-    this.preloadPromise = new Promise((resolve) => {
-      let pending = names.length;
-      let finished = false;
-      let timer = null;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        this.filesReady = true;
-        resolve();
-      };
-      timer = setTimeout(finish, 10000);
-      for (const name of names) {
-        const audio = new Audio(`assets/sounds/67/${encodeURIComponent(name)}.mp3`);
-        const settle = () => {
-          pending -= 1;
-          if (pending <= 0) finish();
-        };
-        audio.addEventListener("canplaythrough", settle, { once: true });
-        audio.addEventListener("error", settle, { once: true });
-      }
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Sound loading timed out"));
+      }, 120000);
     });
+    const load = async () => {
+      this.unlock();
+      if (!this.context) throw new Error("Web Audio unavailable");
+      let cache = null;
+      try {
+        cache = await window.caches?.open("star-ring-67-audio-v1");
+      } catch {}
+      let completed = 0;
+      onProgress?.(completed, names.length);
+      const entries = await Promise.all(names.map(async (name) => {
+        const url = new URL(`assets/sounds/67/${encodeURIComponent(name)}.mp3`, document.baseURI).href;
+        let response = null;
+        try {
+          response = await cache?.match(url);
+        } catch {}
+        const cached = Boolean(response);
+        if (!response) response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`Sound request failed: ${response.status}`);
+        const storedResponse = response.clone();
+        let buffer;
+        try {
+          buffer = await this.context.decodeAudioData(await response.arrayBuffer());
+        } catch (error) {
+          if (cached) await cache.delete(url).catch(() => {});
+          throw error;
+        }
+        controller.signal.throwIfAborted();
+        if (cache && !cached) {
+          try {
+            await cache.put(url, storedResponse);
+          } catch {}
+        }
+        controller.signal.throwIfAborted();
+        onProgress?.(++completed, names.length);
+        return [name, buffer];
+      }));
+      return Object.fromEntries(entries);
+    };
+    this.preloadPromise = Promise.race([load(), timeout]).then((buffers) => {
+      this.buffers = buffers;
+      this.filesReady = true;
+    }).catch((error) => {
+      controller.abort();
+      this.preloadPromise = null;
+      throw error;
+    }).finally(() => clearTimeout(timer));
     return this.preloadPromise;
   }
 
@@ -535,20 +579,44 @@ class AudioEngine {
   laserPrep() {
     if (!this.enabled) return;
     this.stopLaserPrep();
+    if (this.mode === "67") {
+      this.prepOffset = 0;
+      this.prepStartedAt = this.context.currentTime;
+      this.prepSource = this.playFile("激光预备");
+      return;
+    }
     const audio = new Audio(`assets/sounds/67/${encodeURIComponent("激光预备")}.mp3`);
     this.prepAudio = audio;
     audio.play().catch(() => {});
   }
   stopLaserPrep() {
-    if (!this.prepAudio) return;
-    this.prepAudio.pause();
-    this.prepAudio.currentTime = 0;
-    this.prepAudio = null;
+    if (this.prepSource) {
+      this.prepSource.stop();
+      this.prepSource.disconnect();
+      this.prepSource = null;
+    }
+    this.prepOffset = null;
+    if (this.prepAudio) {
+      this.prepAudio.pause();
+      this.prepAudio.currentTime = 0;
+      this.prepAudio = null;
+    }
   }
   pauseLaserPrep() {
+    if (this.prepSource) {
+      this.prepOffset += this.context.currentTime - this.prepStartedAt;
+      this.prepSource.stop();
+      this.prepSource.disconnect();
+      this.prepSource = null;
+    }
     if (this.prepAudio) this.prepAudio.pause();
   }
   resumeLaserPrep() {
+    if (!this.enabled) return;
+    if (this.mode === "67" && this.prepOffset != null && !this.prepSource && this.prepOffset < this.buffers["激光预备"]?.duration) {
+      this.prepStartedAt = this.context.currentTime;
+      this.prepSource = this.playFile("激光预备", this.prepOffset);
+    }
     if (this.prepAudio) this.prepAudio.play().catch(() => {});
   }
   laser() {
@@ -963,9 +1031,10 @@ ui.customMapEntry.addEventListener("click", () => {
     ui.settingsButton.addEventListener("click", () => this.openSettings());
     ui.settingsSoundToggle.addEventListener("click", (event) => {
       const button = event.target.closest("[data-sound-mode]");
-      if (!button) return;
+      if (!button || this.starting) return;
       this.audio.setMode(button.dataset.soundMode);
       this.updateSoundControl();
+      if (this.state !== "menu") this.withLoadedAudio(() => {});
     });
     ui.bgUploadButton.addEventListener("click", () => ui.bgFileInput.click());
     ui.bgFileInput.addEventListener("change", () => {
@@ -1252,7 +1321,7 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   openSettings() {
-    if (!ui.settings.hidden || !ui.help.hidden) return;
+    if (this.starting || !ui.settings.hidden || !ui.help.hidden) return;
     this.settingsReturnState = this.state;
     this.resetClickCount = 0;
     if (this.state === "playing") this.pause();
@@ -1261,6 +1330,7 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   closeSettings() {
+    if (this.starting) return;
     ui.settings.hidden = true;
     if (this.settingsReturnState === "playing" && this.state === "paused") this.resume();
     else if (this.settingsReturnState === "paused") ui.pause.hidden = false;
@@ -2971,22 +3041,42 @@ ui.customMapEntry.addEventListener("click", () => {
     ui.mapCards.appendChild(customEntry);
   }
 
-  start() {
+  async withLoadedAudio(onReady) {
     if (this.starting) return;
-    this.audio.preloadOne("激光");
-    this.audio.preloadOne("激光预备");
+    let failed = false;
     if (this.audio.mode === "67" && !this.audio.filesReady) {
       this.starting = true;
-      this.audio.unlock();
+      if (this.state === "playing") this.pause();
       ui.loadingOverlay.hidden = false;
-      this.audio.preloadFiles().then(() => {
+      ui.loadingOverlay.querySelector(".loading-text").textContent = I18N.t("audio.loading", { loaded: 0, total: 11 });
+      try {
+        await this.audio.preloadFiles((loaded, total) => {
+          ui.loadingOverlay.querySelector(".loading-text").textContent = I18N.t("audio.loading", { loaded, total });
+        });
+      } catch {
+        failed = true;
+        this.audio.setMode("standard");
+        this.updateSoundControl();
+      } finally {
         this.starting = false;
         ui.loadingOverlay.hidden = true;
-        this.beginRun();
-      });
-      return;
+      }
     }
-    this.beginRun();
+    onReady();
+    if (failed) {
+      this.showCustomToast(I18N.t("audio.failed"), "#ffbd73");
+      this.powerupToastTime = 5;
+    }
+  }
+
+  start() {
+    return this.withLoadedAudio(() => {
+      if (this.audio.mode === "standard") {
+        this.audio.preloadOne("激光");
+        this.audio.preloadOne("激光预备");
+      }
+      this.beginRun();
+    });
   }
 
   beginRun() {
@@ -3119,6 +3209,7 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   goToMenu() {
+    if (this.starting) return;
     if (["playing", "paused"].includes(this.state) && this.player) this.recordBest(false);
     if (this._endlessMapTypeSaved != null) { this.endless.map = this._endlessMapTypeSaved; this._endlessMapTypeSaved = null; }
     this.state = "menu";
@@ -4331,7 +4422,7 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
   }
 
   resume() {
-    if (this.state !== "paused" || this.mapSelectOpen) return;
+    if (this.starting || this.state !== "paused" || this.mapSelectOpen) return;
     this.state = "playing";
     this.audio.resumeLaserPrep();
     ui.pause.hidden = true;
