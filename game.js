@@ -255,6 +255,9 @@ const formatTime = (seconds) => {
   return `${String(Math.floor(whole / 60)).padStart(2, "0")}:${String(whole % 60).padStart(2, "0")}`;
 };
 
+const PORTAL_COLORS = ["#64fbd2", "#ad8cff", "#ffd166", "#ff8a65", "#6ee7ff", "#ff9dab", "#7dff8a", "#f6a5ff", "#ffe28a", "#ffffff"];
+const PORTAL_UNLINKED_COLOR = "#65a9ff";
+
 function polygon(context, sides, radius, rotation = 0) {
   context.beginPath();
   for (let i = 0; i < sides; i += 1) {
@@ -1951,7 +1954,7 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   getEnemyMoveTarget(enemy, dt, goal = this.player) {
-    if (this.map.id === "gravity" && goal === this.player) return this.getEnemyPursuitTarget(enemy, dt);
+    if (this.pairedPortals && goal === this.player) return this.getEnemyPursuitTarget(enemy, dt);
     if (enemy._navObstacles !== this.obstacles) {
       enemy._navObstacles = this.obstacles;
       enemy._navPath = null;
@@ -2127,6 +2130,10 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   gravityWalkClear(from, to, clearance) {
+    if (!this.hasLineOfSight(from.x, from.y, to.x, to.y, clearance)) {
+      const tight = clearance - 35;
+      if (!((from.kind === "start" || to.kind === "goal") && this.hasLineOfSight(from.x, from.y, to.x, to.y, Math.max(0.001, tight)))) return false;
+    }
     return this.portals.every((portal, index) => {
       if (from.kind === "exit" && from.portalIndex === index) return true;
       if (to.kind === "entry" && to.portalIndex === index) return true;
@@ -2142,45 +2149,51 @@ ui.customMapEntry.addEventListener("click", () => {
     const clearance = radius + 34;
     const ringRadius = clearance / Math.cos(Math.PI / 12) + 1;
     const nodes = [];
-    const exits = [];
+    const exits = new Map();
+    const blockedEntries = new Set();
     for (let i = 0; i < this.portals.length; i += 1) {
       const portal = this.portals[i];
+      if (portal.target == null) continue;
+      const exitPortal = this.portals[portal.target];
+      if (this.obstacles.some((obstacle) => circleTouchesRect(exitPortal.x, exitPortal.y, radius + 2, obstacle))) blockedEntries.add(i);
       for (let side = 0; side < 12; side += 1) {
         const angle = side * Math.PI / 6;
         nodes.push({ x: portal.x + Math.cos(angle) * ringRadius, y: portal.y + Math.sin(angle) * ringRadius, kind: "walk" });
       }
       nodes.push({ x: portal.x, y: portal.y, kind: "entry", portalIndex: i });
-      exits[i] = nodes.length;
+      exits.set(i, nodes.length);
       nodes.push({ x: portal.x, y: portal.y, kind: "exit", portalIndex: i });
     }
     const edges = nodes.map(() => []);
     for (let i = 0; i < nodes.length; i += 1) {
       const from = nodes[i];
       if (from.kind === "entry") {
-        edges[i].push({ to: exits[this.portals[from.portalIndex].target], cost: 0 });
+        if (!blockedEntries.has(from.portalIndex)) edges[i].push({ to: exits.get(this.portals[from.portalIndex].target), cost: 0 });
         continue;
       }
       for (let j = 0; j < nodes.length; j += 1) {
         const to = nodes[j];
         if (i === j || to.kind === "exit") continue;
+        if (to.kind === "entry" && blockedEntries.has(to.portalIndex)) continue;
         if (from.kind === "exit" && to.kind === "entry" && from.portalIndex === to.portalIndex) continue;
         if (!this.gravityWalkClear(from, to, clearance)) continue;
         const distance = Math.hypot(to.x - from.x, to.y - from.y);
         edges[i].push({ to: j, cost: Math.max(0, distance - (to.kind === "entry" ? radius + 24 : 0)) });
       }
     }
-    const navigation = { nodes, edges, clearance };
+    const navigation = { nodes, edges, clearance, blockedEntries };
     this.gravityNavigation.set(radius, navigation);
     return navigation;
   }
 
   planEnemyRoute(enemy) {
     const navigation = this.getGravityNavigation(enemy.radius);
-    const protectedExit = enemy.portalCooldown > 0 && enemy.portalExitIndex >= 0;
+    const protectedExit = enemy.portalExitIndex >= 0 && (enemy.portalCooldowns[enemy.portalExitIndex] || 0) > 0;
     const goalPoint = { x: this.player.x, y: this.player.y, kind: "goal" };
     for (let i = 0; i < this.portals.length; i += 1) {
       if (protectedExit && enemy.portalExitIndex === i) continue;
       const portal = this.portals[i];
+      if (portal.target == null) continue;
       const dx = goalPoint.x - portal.x;
       const dy = goalPoint.y - portal.y;
       const distance = Math.hypot(dx, dy);
@@ -2200,37 +2213,29 @@ ui.customMapEntry.addEventListener("click", () => {
       if (nodes[i].kind !== "entry" && this.gravityWalkClear(nodes[i], nodes[goal], navigation.clearance)) {
         edges[i].push({ to: goal, cost: Math.hypot(nodes[goal].x - nodes[i].x, nodes[goal].y - nodes[i].y) });
       }
-      if (i === start || nodes[i].kind === "exit" || !this.gravityWalkClear(nodes[start], nodes[i], navigation.clearance)) continue;
+      if (i === start || nodes[i].kind === "exit" || (nodes[i].kind === "entry" && navigation.blockedEntries.has(nodes[i].portalIndex)) || !this.gravityWalkClear(nodes[start], nodes[i], navigation.clearance)) continue;
       const distance = Math.hypot(nodes[i].x - enemy.x, nodes[i].y - enemy.y);
       edges[start].push({ to: i, cost: Math.max(0, distance - (nodes[i].kind === "entry" ? enemy.radius + 24 : 0)) });
     }
-    const statesPerNode = 4;
-    const distances = Array(nodes.length * statesPerNode).fill(Infinity);
-    const previous = Array(distances.length).fill(-1);
-    const visited = Array(distances.length).fill(false);
-    distances[start * statesPerNode] = 0;
+    const distances = Array(nodes.length).fill(Infinity);
+    const previous = Array(nodes.length).fill(-1);
+    const visited = Array(nodes.length).fill(false);
+    distances[start] = 0;
     let destination = -1;
-    for (let step = 0; step < distances.length; step += 1) {
+    for (let step = 0; step < nodes.length; step += 1) {
       let current = -1;
-      for (let i = 0; i < distances.length; i += 1) {
+      for (let i = 0; i < nodes.length; i += 1) {
         if (!visited[i] && (current === -1 || distances[i] < distances[current])) current = i;
       }
       if (current === -1 || distances[current] === Infinity) break;
-      const nodeIndex = Math.floor(current / statesPerNode);
-      if (nodeIndex === goal) {
+      if (current === goal) {
         destination = current;
         break;
       }
       visited[current] = true;
-      let usedPairs = current % statesPerNode;
-      const node = nodes[nodeIndex];
-      if (node.kind === "entry") {
-        const pair = 1 << Math.min(node.portalIndex, this.portals[node.portalIndex].target);
-        if (usedPairs & pair) continue;
-        usedPairs |= pair;
-      }
-      for (const edge of edges[nodeIndex]) {
-        const next = edge.to * statesPerNode + usedPairs;
+      for (const edge of edges[current]) {
+        const next = edge.to;
+        if (visited[next]) continue;
         const distance = distances[current] + edge.cost;
         if (distance >= distances[next]) continue;
         distances[next] = distance;
@@ -2238,29 +2243,30 @@ ui.customMapEntry.addEventListener("click", () => {
       }
     }
     const route = [];
-    for (let current = destination; current !== -1 && previous[current] !== -1; current = previous[current]) route.push(nodes[Math.floor(current / statesPerNode)]);
+    for (let current = destination; current !== -1 && previous[current] !== -1; current = previous[current]) route.push(nodes[current]);
     route.reverse();
     const firstPortal = route.findIndex((point) => point.kind === "entry");
     enemy.navigationPortal = firstPortal === -1 ? -1 : route[firstPortal].portalIndex;
     enemy.navigationWaypoints = firstPortal === -1 ? route : route.slice(0, firstPortal + 1);
     enemy.navigationTarget = { x: this.player.x, y: this.player.y };
-    enemy.navigationTimer = 0.35;
+    enemy.navigationTimer = destination === -1 ? 1 : 0.35;
   }
 
   getEnemyPursuitTarget(enemy, dt) {
-    if (this.map.id !== "gravity") return this.player;
+    if (!this.pairedPortals) return this.player;
     enemy.navigationTimer -= dt;
-    if (enemy.navigationTimer <= 0 || !enemy.navigationWaypoints.length || distanceSquared(enemy.navigationTarget, this.player) > 80 ** 2) this.planEnemyRoute(enemy);
+    if (enemy.navigationTimer <= 0 || distanceSquared(enemy.navigationTarget, this.player) > 80 ** 2) this.planEnemyRoute(enemy);
     while (enemy.navigationWaypoints.length > 1 && distanceSquared(enemy, enemy.navigationWaypoints[0]) < 16) enemy.navigationWaypoints.shift();
     const target = enemy.navigationWaypoints[0];
     return !target || (target.kind === "goal" && !target.contact) ? this.player : target;
   }
 
   avoidEnemyPortals(enemy) {
-    if (this.map.id !== "gravity") return;
+    if (!this.portals.length) return;
     const radius = enemy.radius + 28;
     for (let i = 0; i < this.portals.length; i += 1) {
-      if (i === enemy.navigationPortal || (enemy.portalCooldown > 0 && i === enemy.portalExitIndex)) continue;
+      if (this.portals[i].target == null) continue;
+      if (i === enemy.navigationPortal || (((enemy.portalCooldowns || [])[i] || 0) > 0 && i === enemy.portalExitIndex)) continue;
       const portal = this.portals[i];
       const sx = enemy.prevX - portal.x;
       const sy = enemy.prevY - portal.y;
@@ -2288,18 +2294,23 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   checkPortals(entity) {
-    if (this.map.id !== "gravity") return false;
+    if (!this.portals.length) return false;
     const isPlayer = entity === this.player;
-    if ((isPlayer ? this.portalCooldown : entity.portalCooldown || 0) > 0) return false;
-    for (const portal of this.portals) {
+    const cooldowns = isPlayer ? this.portalCooldowns : entity.portalCooldowns;
+    if (!cooldowns) return false;
+    for (let index = 0; index < this.portals.length; index += 1) {
+      const portal = this.portals[index];
+      if (portal.target == null || (cooldowns[index] || 0) > 0) continue;
       if (distanceSquared(entity, portal) > (entity.radius + 24) ** 2) continue;
       const target = this.portals[portal.target];
+      if (this.obstacles.some((obstacle) => circleTouchesRect(target.x, target.y, entity.radius + 2, obstacle))) continue;
       const oldX = entity.x;
       const oldY = entity.y;
       entity.x = target.x;
       entity.y = target.y;
+      cooldowns[index] = 3;
+      cooldowns[portal.target] = 3;
       if (isPlayer) {
-        this.portalCooldown = 3;
         entity.prevX = entity.x;
         entity.prevY = entity.y;
         this.camera.x = entity.x;
@@ -2307,7 +2318,6 @@ ui.customMapEntry.addEventListener("click", () => {
         this.clampCamera();
         this.audio.tone(260, 0.18, "sine", 0.025, 920);
       } else {
-        entity.portalCooldown = 3;
         entity.portalExitIndex = portal.target;
         entity.navigationTimer = 0;
         entity.navigationWaypoints = [];
@@ -2334,6 +2344,8 @@ ui.customMapEntry.addEventListener("click", () => {
     this.orbiters = [];
     this.wells = [];
     this.portals = [];
+    this.portalCooldowns = [];
+    this.pairedPortals = false;
     this.gravityNavigation = new Map();
     this.belts = [];
     this.vents = [];
@@ -2345,7 +2357,6 @@ ui.customMapEntry.addEventListener("click", () => {
     this.ventIndex = 0;
     this.wallTimer = 6;
     this.gridTimer = 3;
-    this.portalCooldown = 0;
     this.hazardDamageTimer = 0.25;
     if (this.inBossArena) {
       this.safePlatforms = [
@@ -2359,7 +2370,7 @@ ui.customMapEntry.addEventListener("click", () => {
       return;
     }
     if (this.map.custom) {
-      this.obstacles = this.map.blocks.map((block) => ({
+      this.obstacles = this.map.blocks.filter((block) => block.shape !== "portal").map((block) => ({
         x: block.x,
         y: block.y,
         width: block.width,
@@ -2368,6 +2379,33 @@ ui.customMapEntry.addEventListener("click", () => {
         shape: block.shape === "circle" ? "circle" : undefined,
         custom: true
       }));
+      const portalIndexByBlock = new Map();
+      this.map.blocks.forEach((block, index) => {
+        if (block.shape !== "portal") return;
+        portalIndexByBlock.set(index, this.portals.length);
+        this.portals.push({
+          x: block.x + block.width / 2,
+          y: block.y + block.height / 2,
+          target: null,
+          color: PORTAL_UNLINKED_COLOR
+        });
+      });
+      const paired = new Set();
+      let pairCount = 0;
+      for (const [blockIndex, portalIndex] of portalIndexByBlock) {
+        const block = this.map.blocks[blockIndex];
+        if (block.link == null || paired.has(blockIndex)) continue;
+        const partnerIndex = portalIndexByBlock.get(block.link);
+        if (partnerIndex == null || paired.has(block.link)) continue;
+        paired.add(blockIndex);
+        paired.add(block.link);
+        const color = block.pairColor != null ? (PORTAL_COLORS[block.pairColor % PORTAL_COLORS.length] || PORTAL_UNLINKED_COLOR) : PORTAL_COLORS[pairCount % PORTAL_COLORS.length];
+        pairCount += 1;
+        this.portals[portalIndex].target = partnerIndex;
+        this.portals[partnerIndex].target = portalIndex;
+        this.portals[portalIndex].color = color;
+        this.portals[partnerIndex].color = color;
+      }
       this.reachGrid = this.buildReachGrid();
       this.spawnReach = new Map();
       this.customUnplayable = this.reachGrid.best.size < MIN_PLAYABLE_CELLS;
@@ -2417,7 +2455,7 @@ ui.customMapEntry.addEventListener("click", () => {
       this.powerupPoints = [];
       this.wells.forEach((well, index) => {
         const angle = Math.atan2(this.world.height / 2 - well.y, this.world.width / 2 - well.x);
-        this.portals.push({ x: well.x + Math.cos(angle) * 185, y: well.y + Math.sin(angle) * 185, target: 3 - index });
+        this.portals.push({ x: well.x + Math.cos(angle) * 185, y: well.y + Math.sin(angle) * 185, target: 3 - index, color: index === 0 || index === 3 ? "#64fbd2" : "#ad8cff" });
         this.powerupPoints.push({ x: well.x + Math.cos(angle) * 110, y: well.y + Math.sin(angle) * 110 });
       });
     } else if (this.map.id === "storm") {
@@ -2431,6 +2469,8 @@ ui.customMapEntry.addEventListener("click", () => {
     } else if (this.map.id === "matrix") {
       this.powerupPoints = [];
     }
+    this.portalCooldowns = this.portals.map(() => 0);
+    this.pairedPortals = this.portals.some((portal) => portal.target != null);
   }
 
   buildReachGrid() {
@@ -2581,8 +2621,11 @@ ui.customMapEntry.addEventListener("click", () => {
     const centerY = this.world.height / 2;
     let bestClear = null;
     let bestClearDist = Infinity;
+    let bestPortal = null;
+    let bestPortalDist = Infinity;
     let bestAny = null;
     let bestAnyClearance = -1;
+    let bestAnyPortal = -Infinity;
     let bestAnyDist = Infinity;
     for (let idx = 0; idx < grid.cols * grid.rows; idx += 1) {
       if (grid.label[idx] !== grid.best.label) continue;
@@ -2595,33 +2638,46 @@ ui.customMapEntry.addEventListener("click", () => {
         const d = distanceToRect(x, y, obstacle);
         if (d < clearance) clearance = d;
       }
-      if (clearance >= 24) {
+      let portalClearance = Infinity;
+      for (const portal of this.portals) {
+        const d = Math.hypot(x - portal.x, y - portal.y);
+        if (d < portalClearance) portalClearance = d;
+      }
+      if (clearance >= 24 && portalClearance >= 72) {
         if (dist < bestClearDist) {
           bestClearDist = dist;
           bestClear = { x, y };
         }
       }
-      if (clearance > bestAnyClearance || (clearance === bestAnyClearance && dist < bestAnyDist)) {
+      if (clearance >= 12 && portalClearance >= 72 && dist < bestPortalDist) {
+        bestPortalDist = dist;
+        bestPortal = { x, y };
+      }
+      if (clearance > bestAnyClearance || (clearance === bestAnyClearance && (portalClearance > bestAnyPortal || (portalClearance === bestAnyPortal && dist < bestAnyDist)))) {
         bestAnyClearance = clearance;
+        bestAnyPortal = portalClearance;
         bestAnyDist = dist;
         bestAny = { x, y };
       }
     }
-    return bestClear || bestAny || { x: centerX, y: centerY };
+    return bestClear || bestPortal || bestAny || { x: centerX, y: centerY };
+  }
+
+  portalSpawnClear(x, y, margin) {
+    return this.portals.every((portal) => distanceSquared(x, y, portal) > margin ** 2);
   }
 
   findSpawnPoint(stats) {
     const player = this.player || { x: this.world.width / 2, y: this.world.height / 2 };
     const margin = stats.radius + 30;
     const playerLabel = this.reachGrid ? this.reachLabelAt(player.x, player.y) : -1;
-    const clear = (x, y) => !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle));
+    const clear = (x, y) => !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle)) && this.portalSpawnClear(x, y, stats.radius + 48);
     const reachable = (x, y) => this.spawnReachable(x, y, stats.radius);
     const rings = this.reachGrid
       ? [
           { min: 500, max: 800, count: 12, needFar: true },
           { min: 320, max: 500, count: 10, needFar: true },
-          { min: 0, max: 320, count: 8, needFar: false },
-          { min: 0, max: 0, count: 1, needFar: false }
+          { min: 140, max: 320, count: 8, needFar: false }
         ]
       : [{ min: 500, max: 800, count: 12, needFar: true }];
     let last = null;
@@ -2644,7 +2700,8 @@ ui.customMapEntry.addEventListener("click", () => {
         if (cells[idx] !== playerLabel) continue;
         const x = (idx % this.reachGrid.cols) * REACH_CELL + REACH_CELL / 2;
         const y = ((idx / this.reachGrid.cols) | 0) * REACH_CELL + REACH_CELL / 2;
-        if (this.spawnReachable(x, y, stats.radius)) matches.push(idx);
+        if ((x - player.x) ** 2 + (y - player.y) ** 2 <= 120 ** 2) continue;
+        if (this.spawnReachable(x, y, stats.radius) && clear(x, y)) matches.push(idx);
       }
       if (matches.length) {
         const idx = matches[(Math.random() * matches.length) | 0];
@@ -2692,7 +2749,7 @@ ui.customMapEntry.addEventListener("click", () => {
 
   updateMapHazards(dt) {
     this.mapTime += dt;
-    this.portalCooldown = Math.max(0, this.portalCooldown - dt);
+    for (let i = 0; i < this.portalCooldowns.length; i += 1) this.portalCooldowns[i] = Math.max(0, this.portalCooldowns[i] - dt);
     this.hazardDamageTimer -= dt;
     const damageTick = this.hazardDamageTimer <= 0;
     if (damageTick) this.hazardDamageTimer += 0.25;
@@ -2928,7 +2985,8 @@ ui.customMapEntry.addEventListener("click", () => {
                 width: block.width,
                 height: block.height,
                 rot,
-                ...(block.shape === "circle" ? { shape: "circle" } : {})
+                ...(block.shape === "circle" ? { shape: "circle" } : {}),
+                ...(block.shape === "portal" ? { shape: "portal", link: Number.isInteger(block.link) ? block.link : null, pairColor: Number.isInteger(block.pairColor) ? block.pairColor : null } : {})
               };
             })
         : [];
@@ -3612,11 +3670,22 @@ ui.customMapEntry.addEventListener("click", () => {
       x = clamp(this.player.x, 280, this.world.width - 280);
       y = clamp(this.player.y - 420, 180, this.world.height - 180);
       if (this.reachGrid) {
-        const spawnClear = !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle));
+        const spawnClear = this.portalSpawnClear(x, y, stats.radius + 48) && !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle));
         if (!spawnClear || !this.spawnReachable(x, y, stats.radius)) {
           const fallback = this.findSpawnPoint(stats);
           x = fallback.x;
           y = fallback.y;
+        }
+      } else if (!this.portalSpawnClear(x, y, stats.radius + 48)) {
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          const angle = attempt * Math.PI / 6;
+          const nx = clamp(this.player.x + Math.cos(angle) * 420, 280, this.world.width - 280);
+          const ny = clamp(this.player.y + Math.sin(angle) * 420, 180, this.world.height - 180);
+          if (this.portalSpawnClear(nx, ny, stats.radius + 48)) {
+            x = nx;
+            y = ny;
+            break;
+          }
         }
       }
     } else if (x === null || y === null) {
@@ -3632,7 +3701,7 @@ ui.customMapEntry.addEventListener("click", () => {
           x = clamp((this.player?.x || this.world.width / 2) + Math.cos(angle) * distance, margin, this.world.width - margin);
           y = clamp((this.player?.y || this.world.height / 2) + Math.sin(angle) * distance, margin, this.world.height - margin);
           const farEnough = !this.player || (x - this.player.x) ** 2 + (y - this.player.y) ** 2 > 320 ** 2;
-          const clear = !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle));
+          const clear = !this.obstacles.some((obstacle) => circleTouchesRect(x, y, stats.radius + 12, obstacle)) && this.portalSpawnClear(x, y, stats.radius + 48);
           if (farEnough && clear) break;
         }
       }
@@ -3650,6 +3719,7 @@ ui.customMapEntry.addEventListener("click", () => {
       navigationWaypoints: [],
       navigationPortal: -1,
       portalExitIndex: -1,
+      portalCooldowns: this.portals.map(() => 0),
       anchorX: x,
       anchorY: y,
       elite: false,
@@ -3710,7 +3780,7 @@ ui.customMapEntry.addEventListener("click", () => {
       enemy.prevY = enemy.y;
       enemy.flash = Math.max(0, enemy.flash - dt);
       enemy.droneHit = Math.max(0, enemy.droneHit - dt);
-      enemy.portalCooldown = Math.max(0, (enemy.portalCooldown || 0) - dt);
+      for (let i = 0; i < enemy.portalCooldowns.length; i += 1) enemy.portalCooldowns[i] = Math.max(0, enemy.portalCooldowns[i] - dt);
       if (enemy.spawnIn > 0) {
         enemy.spawnIn -= dt;
         if (enemy.type !== "boss" && enemy.type !== "prism" && this.map.id !== "gravity") this.getEnemyMoveTarget(enemy, dt);
@@ -3781,7 +3851,7 @@ ui.customMapEntry.addEventListener("click", () => {
             enemy.y += steer.ny * enemy.speed * dt * slowFactor;
             enemy.cooldown -= dt;
             enemy.faceAngle = rotateToward(enemy.faceAngle, Math.atan2(dy, dx), 9 * dt);
-            const clearCharge = this.map.id !== "gravity" || this.portals.every((portal, index) => index === enemy.navigationPortal || (enemy.portalCooldown > 0 && index === enemy.portalExitIndex) || !segmentHitsCircle(enemy.x, enemy.y, player.x, player.y, portal.x, portal.y, enemy.radius + 28));
+            const clearCharge = !this.portals.length || this.portals.every((portal, index) => index === enemy.navigationPortal || (((enemy.portalCooldowns || [])[index] || 0) > 0 && index === enemy.portalExitIndex) || !segmentHitsCircle(enemy.x, enemy.y, player.x, player.y, portal.x, portal.y, enemy.radius + 28));
             if (enemy.cooldown <= 0 && distance < 370 && clearCharge && this.canEnemyTravel(enemy.x, enemy.y, player.x, player.y, enemy.radius)) {
               enemy.state = "telegraph";
               enemy.stateTime = 0.65;
@@ -4920,26 +4990,28 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
       }
     }
     this.portals.forEach((portal, index) => {
-      const color = index === 0 || index === 3 ? "#64fbd2" : "#ad8cff";
-      context.strokeStyle = color;
-      context.fillStyle = "rgba(100, 251, 210, 0.08)";
+      context.save();
+      context.strokeStyle = portal.color;
+      context.globalAlpha = 0.08;
+      context.fillStyle = portal.color;
       context.beginPath();
       context.arc(portal.x, portal.y, 27, 0, Math.PI * 2);
       context.fill();
+      context.globalAlpha = 1;
       context.stroke();
       if (!compact) {
-        context.save();
         context.translate(portal.x, portal.y);
         polygon(context, 4, 15, this.mapTime * 1.2);
         context.stroke();
-        if (this.portalCooldown > 0) {
+        const cooldown = this.portalCooldowns[index] || 0;
+        if (cooldown > 0) {
           context.strokeStyle = "#ffd166";
           context.beginPath();
-          context.arc(0, 0, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * this.portalCooldown / 3);
+          context.arc(0, 0, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cooldown / 3);
           context.stroke();
         }
-        context.restore();
       }
+      context.restore();
     });
     if (this.orbiters.length > 0) {
       context.save();

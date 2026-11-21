@@ -6,10 +6,13 @@
     h: { width: 240, height: 60 },
     v: { width: 240, height: 60, rot: 90 }
   };
-  const MATERIALS = ["h", "v", "c"];
+  const MATERIALS = ["h", "v", "c", "p"];
   const CIRCLE_RADII = [18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62];
   const DEFAULT_CIRCLE_SIZE = 6;
   const CIRCLE_SIZE_KEY = "star-ring-circle-size";
+  const PORTAL_DIAMETER = 54;
+  const PORTAL_UNLINKED_COLOR = "#65a9ff";
+  const PORTAL_COLORS = ["#64fbd2", "#ad8cff", "#ffd166", "#ff8a65", "#6ee7ff", "#ff9dab", "#7dff8a", "#f6a5ff", "#ffe28a", "#ffffff"];
   const HANDLE_OFFSET_PX = 30;
   const BUTTON_GAP_PX = 22;
   const RESIZE_PAD_PX = 5;
@@ -109,8 +112,9 @@
   }
 
   const clampNum = (value, min, max) => Math.min(max, Math.max(min, value));
-  const CODE_PREFIX = "SRB3.";
-  const LEGACY_CODE_PREFIX = "SRB2.";
+  const CODE_PREFIX = "SRB4.";
+  const LEGACY_CODE_PREFIX = "SRB3.";
+  const LEGACY2_CODE_PREFIX = "SRB2.";
   const CODE_KEY = [0x5a, 0xa5, 0x3c, 0xc3];
 
   function loadCircleSize() {
@@ -155,7 +159,12 @@
       push(Math.round(clampNum(Number(block.width) || 0, 0, 2400) / 5), 9);
       push(Math.round(clampNum(Number(block.height) || 0, 0, 1620) / 5), 9);
       push(((Math.round((Number(block.rot) || 0) / 15) % 24) + 24) % 24, 5);
-      push(block.shape === "circle" ? 1 : 0, 1);
+      const shapeCode = block.shape === "circle" ? 1 : block.shape === "portal" ? 2 : 0;
+      push(shapeCode, 2);
+      if (shapeCode === 2) {
+        push(block.link == null ? 255 : clampNum(Math.round(Number(block.link) || 0), 0, 254), 8);
+        push(block.link == null ? 0 : clampNum(Math.round(Number(block.pairColor) || 0), 0, 15), 4);
+      }
     }
     const data = [];
     for (let i = 0; i < writer.bits.length; i += 8) {
@@ -174,11 +183,16 @@
     if (typeof code !== "string") return null;
     const trimmed = code.trim();
     let payload;
-    let legacy = false;
-    if (trimmed.startsWith(CODE_PREFIX)) payload = trimmed.slice(CODE_PREFIX.length);
-    else if (trimmed.startsWith(LEGACY_CODE_PREFIX)) {
+    let version = 0;
+    if (trimmed.startsWith(CODE_PREFIX)) {
+      payload = trimmed.slice(CODE_PREFIX.length);
+      version = 4;
+    } else if (trimmed.startsWith(LEGACY_CODE_PREFIX)) {
       payload = trimmed.slice(LEGACY_CODE_PREFIX.length);
-      legacy = true;
+      version = 3;
+    } else if (trimmed.startsWith(LEGACY2_CODE_PREFIX)) {
+      payload = trimmed.slice(LEGACY2_CODE_PREFIX.length);
+      version = 2;
     } else return null;
     let binary = "";
     try {
@@ -239,13 +253,24 @@
       const rot = read(5);
       if (qx === null || qy === null || qw === null || qh === null || rot === null) return null;
       if (qx > 498 || qy > 324 || qw > 480 || qh > 324 || qw < 1 || qh < 1) return null;
-      let shapeBit = 0;
-      if (!legacy) {
-        shapeBit = read(1);
-        if (shapeBit === null) return null;
+      let shapeCode = 0;
+      if (version >= 4) {
+        shapeCode = read(2);
+        if (shapeCode === null || shapeCode > 2) return null;
+      } else if (version >= 3) {
+        shapeCode = read(1);
+        if (shapeCode === null) return null;
       }
-      if (shapeBit === 1) blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: 0, shape: "circle" });
-      else blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: rot * 15 });
+      if (shapeCode === 2) {
+        const link = read(8);
+        const pairColor = read(4);
+        if (link === null || pairColor === null) return null;
+        blocks.push({ x: qx * 5 - 90, y: qy * 5, width: PORTAL_DIAMETER, height: PORTAL_DIAMETER, rot: 0, shape: "portal", link: link === 255 ? null : link, pairColor: link === 255 ? null : pairColor % PORTAL_COLORS.length });
+      } else if (shapeCode === 1) {
+        blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: 0, shape: "circle" });
+      } else {
+        blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: rot * 15 });
+      }
     }
     return { name, desc, blocks };
   }
@@ -312,6 +337,7 @@
       this.future = [];
       this.dirty = false;
       this.customSelectedId = null;
+      this.pendingLink = null;
       this.detailMapId = null;
       this.editingMapId = null;
       this.editorFromSelect = false;
@@ -378,6 +404,14 @@
       els.canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
       els.canvas.addEventListener("pointerup", () => this.onPointerUp());
       els.canvas.addEventListener("pointercancel", () => this.onPointerUp());
+      els.canvas.addEventListener("wheel", (event) => {
+        if (!this.editorOpen || !els.dialog.hidden || this.material !== "c") return;
+        event.preventDefault();
+        const delta = event.deltaY < 0 ? 1 : -1;
+        this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
+        saveCircleSize(this.circleSize);
+        this.refreshMaterialButton(false);
+      });
       els.canvas.addEventListener("pointerleave", () => {
         this.pointer.inside = false;
       });
@@ -406,7 +440,7 @@
             const delta = event.code === "Minus" || event.code === "NumpadSubtract" ? -1 : 1;
             this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
             saveCircleSize(this.circleSize);
-            this.refreshMaterialButton();
+            this.refreshMaterialButton(false);
             return;
           }
         }
@@ -439,6 +473,25 @@
       this.editorOpen = true;
       this.circleSize = loadCircleSize();
       this.blocks = (existingMap ? existingMap.blocks : []).map((block, index) => ({ ...block, id: index + 1 }));
+      for (const block of this.blocks) {
+        if (block.shape === "portal" && block.link != null) {
+          const target = this.blocks[block.link];
+          block.link = target && target.shape === "portal" ? target.id : null;
+        }
+      }
+      const usedColors = new Set();
+      for (const pair of this.portalPairs()) {
+        if (pair[0].pairColor != null) {
+          usedColors.add(pair[0].pairColor);
+          continue;
+        }
+        let index = 0;
+        while (usedColors.has(index)) index += 1;
+        if (index >= PORTAL_COLORS.length) index = usedColors.size % PORTAL_COLORS.length;
+        pair[0].pairColor = index;
+        pair[1].pairColor = index;
+        usedColors.add(index);
+      }
       this.nextBlockId = this.blocks.length + 1;
       this.editingMapId = existingMap ? existingMap.id : null;
       this.editorFromSelect = !!existingMap;
@@ -451,6 +504,7 @@
       this.future = [];
       this.dirty = false;
       this.drag = null;
+      this.pendingLink = null;
       this.setTool("place");
       this.refreshMaterialButton();
       els.overlay.hidden = false;
@@ -712,7 +766,7 @@
       const cols = Math.ceil(WORLD_WIDTH / REACH_CELL);
       const rows = Math.ceil(WORLD_HEIGHT / REACH_CELL);
       const total = cols * rows;
-      const obstacles = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
+      const obstacles = this.blocks.filter((block) => block.shape !== "portal").map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
       const blocked = new Uint8Array(total);
       for (let idx = 0; idx < total; idx += 1) {
         const x = (idx % cols) * REACH_CELL + REACH_CELL / 2;
@@ -752,7 +806,7 @@
     }
 
     checkBossSpace() {
-      const obstacles = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
+      const obstacles = this.blocks.filter((block) => block.shape !== "portal").map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
       const cols = Math.ceil(WORLD_WIDTH / REACH_CELL);
       const rows = Math.ceil(WORLD_HEIGHT / REACH_CELL);
       const total = cols * rows;
@@ -795,6 +849,11 @@
         if (block.shape === "circle") {
           saved.shape = "circle";
           saved.rot = 0;
+        } else if (block.shape === "portal") {
+          saved.shape = "portal";
+          saved.rot = 0;
+          saved.link = block.link == null ? null : this.blocks.findIndex((candidate) => candidate.id === block.link);
+          saved.pairColor = block.pairColor ?? null;
         }
         return saved;
       });
@@ -902,6 +961,7 @@
         this.group = [];
         this.groupBounds = null;
       }
+      if (tool !== "link") this.pendingLink = null;
       this.updateToolUI();
     }
 
@@ -922,14 +982,17 @@
 
     toggleMaterial() {
       if (this.material === "c") return;
-      this.setMaterial(this.material === "h" ? "v" : "h");
+      this.material = this.material === "h" ? "v" : "h";
+      this.refreshMaterialButton(false);
     }
 
-    refreshMaterialButton() {
+    refreshMaterialButton(updateSelection = true) {
       els.materials.querySelectorAll("[data-mat]").forEach((button) => {
         const isBar = button.dataset.mat === "h";
-        const active = button.dataset.mat === this.material || (isBar && this.material === "v");
-        button.classList.toggle("selected", active);
+        if (updateSelection) {
+          const active = button.dataset.mat === this.material || (isBar && this.material === "v");
+          button.classList.toggle("selected", active);
+        }
         if (isBar) {
           const vertical = this.material === "v";
           button.classList.toggle("vertical", vertical);
@@ -1006,6 +1069,13 @@
         const centerY = Math.min(WORLD_HEIGHT - radius, Math.max(radius, Math.round(point.y / snap) * snap));
         return { id: 0, x: centerX - radius, y: centerY - radius, width: radius * 2, height: radius * 2, rot: 0, shape: "circle" };
       }
+      if (this.material === "p") {
+        const r = PORTAL_DIAMETER / 2;
+        const snap = this.getSnap();
+        const centerX = Math.min(WORLD_WIDTH - r, Math.max(r, Math.round(point.x / snap) * snap));
+        const centerY = Math.min(WORLD_HEIGHT - r, Math.max(r, Math.round(point.y / snap) * snap));
+        return { id: 0, x: centerX - r, y: centerY - r, width: PORTAL_DIAMETER, height: PORTAL_DIAMETER, rot: 0, shape: "portal" };
+      }
       const spec = BLOCKS[this.material];
       const hw = spec.width / 2;
       const hh = spec.height / 2;
@@ -1019,7 +1089,7 @@
     }
 
     containsPoint(block, px, py) {
-      if (block.shape === "circle") {
+      if (block.shape === "circle" || block.shape === "portal") {
         const r = block.width / 2;
         return Math.hypot(px - block.x - r, py - block.y - r) <= r;
       }
@@ -1126,7 +1196,7 @@
     axisAlignedGroup() {
       let base = null;
       for (const block of this.group) {
-        if (block.shape === "circle") continue;
+        if (block.shape === "circle" || block.shape === "portal") continue;
         const r = Math.round((((block.rot || 0) % 90) + 90) % 90);
         if (base === null) base = r;
         else if (r !== base) return false;
@@ -1136,10 +1206,54 @@
 
     groupBoxAngle() {
       for (const block of this.group) {
-        if (block.shape === "circle") continue;
+        if (block.shape === "circle" || block.shape === "portal") continue;
         return Math.round((((block.rot || 0) % 90) + 90) % 90);
       }
       return 0;
+    }
+
+    portalPairs() {
+      const pairs = [];
+      const seen = new Set();
+      const portals = this.blocks.filter((block) => block.shape === "portal");
+      for (const block of portals) {
+        if (block.link == null) continue;
+        const other = this.blocks.find((candidate) => candidate.id === block.link);
+        if (!other || other.link !== block.id) continue;
+        const key = Math.min(block.id, other.id) + ":" + Math.max(block.id, other.id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push([block, other]);
+      }
+      pairs.sort((a, b) => Math.min(a[0].id, a[1].id) - Math.min(b[0].id, b[1].id));
+      return pairs;
+    }
+
+    assignPortalColor() {
+      const used = new Set();
+      for (const pair of this.portalPairs()) {
+        if (pair[0].pairColor != null) used.add(pair[0].pairColor);
+      }
+      let index = 0;
+      while (used.has(index)) index += 1;
+      if (index >= PORTAL_COLORS.length) index = this.portalPairs().length % PORTAL_COLORS.length;
+      return index;
+    }
+
+    portalColor(block) {
+      return block.pairColor == null ? PORTAL_UNLINKED_COLOR : PORTAL_COLORS[block.pairColor % PORTAL_COLORS.length];
+    }
+
+    unlinkPortal(block) {
+      if (block.link == null) return;
+      const other = this.blocks.find((candidate) => candidate.id === block.link);
+      if (other && other.link === block.id) {
+        other.link = null;
+        other.pairColor = undefined;
+      }
+      block.link = null;
+      block.pairColor = undefined;
+      this.dirty = true;
     }
 
     groupButtons() {
@@ -1187,7 +1301,7 @@
     hitBlockAt(wx, wy) {
       for (let i = this.blocks.length - 1; i >= 0; i -= 1) {
         const block = this.blocks[i];
-        if (block.shape === "circle") {
+        if (block.shape === "circle" || block.shape === "portal") {
           const r = block.width / 2;
           if (Math.hypot(wx - block.x - r, wy - block.y - r) <= r) return block;
           continue;
@@ -1227,6 +1341,33 @@
           this.removeBlock(hit);
         }
         this.drag = { mode: "erase", lastX: point.x, lastY: point.y, historyPushed: !!hit };
+      } else if (this.tool === "link") {
+        if (this.pendingLink && !this.blocks.includes(this.pendingLink)) this.pendingLink = null;
+        const hit = this.hitBlockAt(point.x, point.y);
+        if (hit && hit.shape === "portal") {
+          if (!this.pendingLink) {
+            this.pendingLink = hit;
+          } else if (this.pendingLink === hit) {
+            this.pushHistory();
+            this.unlinkPortal(hit);
+            this.pendingLink = null;
+            this.updateToolUI();
+          } else {
+            this.pushHistory();
+            this.unlinkPortal(this.pendingLink);
+            this.unlinkPortal(hit);
+            this.pendingLink.link = hit.id;
+            hit.link = this.pendingLink.id;
+            const colorIndex = this.assignPortalColor();
+            this.pendingLink.pairColor = colorIndex;
+            hit.pairColor = colorIndex;
+            this.pendingLink = null;
+            this.dirty = true;
+            this.updateToolUI();
+          }
+        } else {
+          this.pendingLink = null;
+        }
       } else {
         if (this.group.length >= 2 && this.groupBounds) {
           const buttons = this.groupButtons();
@@ -1246,6 +1387,7 @@
           if (Math.hypot(point.x - buttons[2].x, point.y - buttons[2].y) <= this.handleHitRadius()) {
             this.pushHistory();
             for (const block of this.group) {
+              if (block.shape === "portal") this.unlinkPortal(block);
               this.blocks.splice(this.blocks.indexOf(block), 1);
             }
             this.group = [];
@@ -1269,7 +1411,7 @@
             this.updateToolUI();
             return;
           }
-          if (this.selected.shape !== "circle" && Math.hypot(point.x - buttons[1].x, point.y - buttons[1].y) <= this.handleHitRadius()) {
+          if (this.selected.shape !== "circle" && this.selected.shape !== "portal" && Math.hypot(point.x - buttons[1].x, point.y - buttons[1].y) <= this.handleHitRadius()) {
             this.drag = { block: this.selected, mode: "rotate", historyPushed: false };
             return;
           }
@@ -1278,7 +1420,7 @@
             this.removeBlock(this.selected);
             return;
           }
-          const resizeHandle = this.resizeHandleAt(this.selected, point.x, point.y);
+          const resizeHandle = this.selected.shape === "portal" ? -1 : this.resizeHandleAt(this.selected, point.x, point.y);
           if (resizeHandle >= 0) {
             this.drag = { block: this.selected, mode: "resize", handle: resizeHandle, historyPushed: false };
             return;
@@ -1368,7 +1510,7 @@
         this.group.forEach((block, index) => {
           block.x = candidates[index].x;
           block.y = candidates[index].y;
-          if (block.shape !== "circle") block.rot = candidates[index].rot;
+          if (block.shape !== "circle" && block.shape !== "portal") block.rot = candidates[index].rot;
         });
         this.groupBoxRot = this.axisAlignedGroup() ? this.groupBoxAngle() : 0;
         this.dirty = true;
@@ -1412,6 +1554,7 @@
           const ny = bly * scaleY;
           const ncx = bounds.cx + nx * cos - ny * sin;
           const ncy = bounds.cy + nx * sin + ny * cos;
+          if (block.shape === "portal") return { ...block };
           if (block.shape === "circle") {
             const d = Math.max(CIRCLE_RADII[0] * 2, block.width * circleScale);
             return { x: ncx - d / 2, y: ncy - d / 2, width: d, height: d, rot: block.rot || 0 };
@@ -1722,6 +1865,10 @@
       const snap = 60;
       const copies = source.map((block) => {
         const copy = { ...block, id: this.nextBlockId };
+        if (block.shape === "portal") {
+          copy.link = null;
+          copy.pairColor = undefined;
+        }
         this.nextBlockId += 1;
         const rotated = ((copy.rot || 0) % 180) !== 0;
         const extX = rotated ? copy.height / 2 : copy.width / 2;
@@ -1738,6 +1885,7 @@
     }
 
     removeBlock(block) {
+      if (block.shape === "portal") this.unlinkPortal(block);
       this.blocks.splice(this.blocks.indexOf(block), 1);
       if (this.selected === block) this.selected = null;
       if (this.lastPlaced === block) this.lastPlaced = null;
@@ -1750,7 +1898,7 @@
     }
 
     snapshotBlocks() {
-      return this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, id: block.id, shape: block.shape }));
+      return this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, id: block.id, shape: block.shape, link: block.link, pairColor: block.pairColor }));
     }
 
     pushHistory() {
@@ -1763,6 +1911,12 @@
     restoreBlocks(list) {
       this.blocks = list.map((block) => ({ ...block }));
       this.nextBlockId = this.blocks.reduce((max, block) => Math.max(max, block.id), 0) + 1;
+      for (const block of this.blocks) {
+        if (block.link != null && !this.blocks.some((candidate) => candidate.id === block.link)) {
+          block.link = null;
+          block.pairColor = undefined;
+        }
+      }
       this.clearSelection();
       this.pruneCovered();
       this.dirty = true;
@@ -1824,12 +1978,31 @@
       }
       if (this.selected) this.drawBlock(context, this.selected, true, 1);
       for (const block of this.group) this.drawBlock(context, block, true, 1);
+      context.save();
+      context.setLineDash([6 / this.scale, 4 / this.scale]);
+      context.lineWidth = 1 / this.scale;
+      for (const pair of this.portalPairs()) {
+        context.strokeStyle = this.portalColor(pair[0]);
+        context.beginPath();
+        context.moveTo(pair[0].x + pair[0].width / 2, pair[0].y + pair[0].height / 2);
+        context.lineTo(pair[1].x + pair[1].width / 2, pair[1].y + pair[1].height / 2);
+        context.stroke();
+      }
+      if (this.tool === "link" && this.pendingLink && this.pointer.inside) {
+        const cursor = this.worldPoint();
+        context.strokeStyle = this.portalColor(this.pendingLink);
+        context.beginPath();
+        context.moveTo(this.pendingLink.x + this.pendingLink.width / 2, this.pendingLink.y + this.pendingLink.height / 2);
+        context.lineTo(cursor.x, cursor.y);
+        context.stroke();
+      }
+      context.restore();
       if (this.tool === "select") {
         if (this.selected) {
           this.drawSelectionBox(context, this.selected);
           const buttons = this.selectionButtons(this.selected);
           this.drawCopyIcon(context, buttons[0]);
-          if (this.selected.shape !== "circle") this.drawHandleKnob(context, buttons[1].x, buttons[1].y);
+          if (this.selected.shape !== "circle" && this.selected.shape !== "portal") this.drawHandleKnob(context, buttons[1].x, buttons[1].y);
           this.drawTrashIcon(context, buttons[2]);
         } else if (this.group.length >= 2 && this.groupBounds) {
           this.drawGroupBox(context);
@@ -1860,6 +2033,34 @@
     drawBlock(context, block, selected, alpha, outline = null) {
       context.save();
       context.globalAlpha = alpha;
+      if (block.shape === "portal") {
+        const r = block.width / 2;
+        context.translate(block.x + r, block.y + r);
+        context.fillStyle = selected ? "#143f3b" : "rgba(36, 56, 80, 0.92)";
+        context.beginPath();
+        context.arc(0, 0, r, 0, Math.PI * 2);
+        context.fill();
+        context.strokeStyle = outline || this.portalColor(block);
+        context.lineWidth = (selected ? 3 : 2) / this.scale;
+        context.beginPath();
+        context.arc(0, 0, r, 0, Math.PI * 2);
+        context.stroke();
+        context.save();
+        context.rotate(performance.now() / 700);
+        context.beginPath();
+        for (let i = 0; i < 4; i += 1) {
+          const angle = i * Math.PI / 2;
+          const px = Math.cos(angle) * 15;
+          const py = Math.sin(angle) * 15;
+          if (i === 0) context.moveTo(px, py);
+          else context.lineTo(px, py);
+        }
+        context.closePath();
+        context.stroke();
+        context.restore();
+        context.restore();
+        return;
+      }
       if (block.shape === "circle") {
         const r = block.width / 2;
         context.translate(block.x + r, block.y + r);
@@ -1931,6 +2132,10 @@
       context.setLineDash([7 / this.scale, 5 / this.scale]);
       context.strokeRect(-hw - pad, -hh - pad, block.width + pad * 2, block.height + pad * 2);
       context.setLineDash([]);
+      if (block.shape === "portal") {
+        context.restore();
+        return;
+      }
       const lxs = [-hw - pad, 0, hw + pad, hw + pad, hw + pad, 0, -hw - pad, -hw - pad];
       const lys = [-hh - pad, -hh - pad, -hh - pad, 0, hh + pad, hh + pad, hh + pad, 0];
       context.fillStyle = "#64fbd2";
