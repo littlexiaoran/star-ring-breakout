@@ -6,7 +6,15 @@
     h: { width: 240, height: 60 },
     v: { width: 240, height: 60, rot: 90 }
   };
+  const MATERIALS = ["h", "v", "c"];
+  const CIRCLE_RADII = [18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62];
+  const DEFAULT_CIRCLE_SIZE = 6;
+  const CIRCLE_SIZE_KEY = "star-ring-circle-size";
   const HANDLE_OFFSET_PX = 30;
+  const BUTTON_GAP_PX = 22;
+  const RESIZE_PAD_PX = 5;
+  const MIN_BLOCK_WIDTH = 30;
+  const MIN_BLOCK_HEIGHT = 15;
   const SNAP_FINE = 5;
   const SNAP_COARSE = 30;
   const ROT_SNAP_FINE = 1;
@@ -16,6 +24,10 @@
   const STORAGE_KEY = "star-ring-custom-maps";
 
   function distToRect(x, y, rect) {
+    if (rect.shape === "circle") {
+      const r = rect.width / 2;
+      return Math.max(0, Math.hypot(x - rect.x - r, y - rect.y - r) - r);
+    }
     if (!rect.rot) {
       const nearestX = x < rect.x ? rect.x : x > rect.x + rect.width ? rect.x + rect.width : x;
       const nearestY = y < rect.y ? rect.y : y > rect.y + rect.height ? rect.y + rect.height : y;
@@ -97,8 +109,23 @@
   }
 
   const clampNum = (value, min, max) => Math.min(max, Math.max(min, value));
-  const CODE_PREFIX = "SRB2.";
+  const CODE_PREFIX = "SRB3.";
+  const LEGACY_CODE_PREFIX = "SRB2.";
   const CODE_KEY = [0x5a, 0xa5, 0x3c, 0xc3];
+
+  function loadCircleSize() {
+    try {
+      const saved = parseInt(localStorage.getItem(CIRCLE_SIZE_KEY), 10);
+      if (Number.isInteger(saved)) return clampNum(saved, 0, CIRCLE_RADII.length - 1);
+    } catch {}
+    return DEFAULT_CIRCLE_SIZE;
+  }
+
+  function saveCircleSize(size) {
+    try {
+      localStorage.setItem(CIRCLE_SIZE_KEY, String(size));
+    } catch {}
+  }
 
   function checksum16(bytes) {
     let hash = 0x811c;
@@ -128,6 +155,7 @@
       push(Math.round(clampNum(Number(block.width) || 0, 0, 2400) / 5), 9);
       push(Math.round(clampNum(Number(block.height) || 0, 0, 1620) / 5), 9);
       push(((Math.round((Number(block.rot) || 0) / 15) % 24) + 24) % 24, 5);
+      push(block.shape === "circle" ? 1 : 0, 1);
     }
     const data = [];
     for (let i = 0; i < writer.bits.length; i += 8) {
@@ -145,10 +173,16 @@
   function decodeMapCode(code) {
     if (typeof code !== "string") return null;
     const trimmed = code.trim();
-    if (!trimmed.startsWith(CODE_PREFIX)) return null;
+    let payload;
+    let legacy = false;
+    if (trimmed.startsWith(CODE_PREFIX)) payload = trimmed.slice(CODE_PREFIX.length);
+    else if (trimmed.startsWith(LEGACY_CODE_PREFIX)) {
+      payload = trimmed.slice(LEGACY_CODE_PREFIX.length);
+      legacy = true;
+    } else return null;
     let binary = "";
     try {
-      binary = atob(trimmed.slice(CODE_PREFIX.length).replace(/-/g, "+").replace(/_/g, "/"));
+      binary = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
     } catch {
       return null;
     }
@@ -205,7 +239,13 @@
       const rot = read(5);
       if (qx === null || qy === null || qw === null || qh === null || rot === null) return null;
       if (qx > 498 || qy > 324 || qw > 480 || qh > 324 || qw < 1 || qh < 1) return null;
-      blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: rot * 15 });
+      let shapeBit = 0;
+      if (!legacy) {
+        shapeBit = read(1);
+        if (shapeBit === null) return null;
+      }
+      if (shapeBit === 1) blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: 0, shape: "circle" });
+      else blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: rot * 15 });
     }
     return { name, desc, blocks };
   }
@@ -262,9 +302,11 @@
       this.nextBlockId = 1;
       this.tool = "place";
       this.material = "h";
+      this.circleSize = DEFAULT_CIRCLE_SIZE;
       this.selected = null;
       this.group = [];
       this.groupBounds = null;
+      this.groupBoxRot = 0;
       this.lastPlaced = null;
       this.past = [];
       this.future = [];
@@ -358,6 +400,16 @@
           this.toggleMaterial();
           return;
         }
+        if (event.code === "Equal" || event.code === "NumpadAdd" || event.code === "Minus" || event.code === "NumpadSubtract") {
+          if (this.material === "c") {
+            event.preventDefault();
+            const delta = event.code === "Minus" || event.code === "NumpadSubtract" ? -1 : 1;
+            this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
+            saveCircleSize(this.circleSize);
+            this.refreshMaterialButton();
+            return;
+          }
+        }
         const mod = event.ctrlKey || event.metaKey;
         if (mod && (event.code === "KeyZ")) {
           event.preventDefault();
@@ -385,6 +437,7 @@
     openEditor(existingMap = null) {
       if (this.editorOpen || this.selectOpen) return;
       this.editorOpen = true;
+      this.circleSize = loadCircleSize();
       this.blocks = (existingMap ? existingMap.blocks : []).map((block, index) => ({ ...block, id: index + 1 }));
       this.nextBlockId = this.blocks.length + 1;
       this.editingMapId = existingMap ? existingMap.id : null;
@@ -392,12 +445,14 @@
       this.selected = null;
       this.group = [];
       this.groupBounds = null;
+      this.groupBoxRot = 0;
       this.lastPlaced = null;
       this.past = [];
       this.future = [];
       this.dirty = false;
       this.drag = null;
       this.setTool("place");
+      this.refreshMaterialButton();
       els.overlay.hidden = false;
       this.resize();
       this.startLoop();
@@ -657,7 +712,7 @@
       const cols = Math.ceil(WORLD_WIDTH / REACH_CELL);
       const rows = Math.ceil(WORLD_HEIGHT / REACH_CELL);
       const total = cols * rows;
-      const obstacles = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0 }));
+      const obstacles = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
       const blocked = new Uint8Array(total);
       for (let idx = 0; idx < total; idx += 1) {
         const x = (idx % cols) * REACH_CELL + REACH_CELL / 2;
@@ -697,7 +752,7 @@
     }
 
     checkBossSpace() {
-      const obstacles = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0 }));
+      const obstacles = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
       const cols = Math.ceil(WORLD_WIDTH / REACH_CELL);
       const rows = Math.ceil(WORLD_HEIGHT / REACH_CELL);
       const total = cols * rows;
@@ -735,7 +790,14 @@
       }
       const maps = loadMaps();
       const existing = this.editingMapId ? maps.find((entry) => entry.id === this.editingMapId) : null;
-      const blocks = this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0 }));
+      const blocks = this.blocks.map((block) => {
+        const saved = { x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0 };
+        if (block.shape === "circle") {
+          saved.shape = "circle";
+          saved.rot = 0;
+        }
+        return saved;
+      });
       if (existing) {
         existing.blocks = blocks;
         existing.updatedAt = Date.now();
@@ -853,24 +915,32 @@
     }
 
     setMaterial(material) {
-      if (!BLOCKS[material]) return;
+      if (!MATERIALS.includes(material)) return;
       this.material = material;
       this.refreshMaterialButton();
     }
 
     toggleMaterial() {
+      if (this.material === "c") return;
       this.setMaterial(this.material === "h" ? "v" : "h");
     }
 
     refreshMaterialButton() {
       els.materials.querySelectorAll("[data-mat]").forEach((button) => {
-        const vertical = this.material === "v";
-        button.classList.toggle("selected", true);
-        button.classList.toggle("vertical", vertical);
-        const label = button.querySelector("span");
-        if (label) label.textContent = vertical
-          ? (I18N.lang === "zh" ? "竖条块" : "Vertical Bar")
-          : (I18N.lang === "zh" ? "横条块" : "Horizontal Bar");
+        const isBar = button.dataset.mat === "h";
+        const active = button.dataset.mat === this.material || (isBar && this.material === "v");
+        button.classList.toggle("selected", active);
+        if (isBar) {
+          const vertical = this.material === "v";
+          button.classList.toggle("vertical", vertical);
+          const label = button.querySelector("span");
+          if (label) label.textContent = vertical
+            ? (I18N.lang === "zh" ? "竖条块" : "Vertical Bar")
+            : (I18N.lang === "zh" ? "横条块" : "Horizontal Bar");
+        }
+        if (button.dataset.mat === "c") {
+          button.style.setProperty("--icon-size", `${14 + this.circleSize * 12 / (CIRCLE_RADII.length - 1)}px`);
+        }
       });
     }
 
@@ -929,6 +999,13 @@
 
     ghostBlock() {
       const point = this.worldPoint();
+      if (this.material === "c") {
+        const radius = CIRCLE_RADII[this.circleSize];
+        const snap = this.getSnap();
+        const centerX = Math.min(WORLD_WIDTH - radius, Math.max(radius, Math.round(point.x / snap) * snap));
+        const centerY = Math.min(WORLD_HEIGHT - radius, Math.max(radius, Math.round(point.y / snap) * snap));
+        return { id: 0, x: centerX - radius, y: centerY - radius, width: radius * 2, height: radius * 2, rot: 0, shape: "circle" };
+      }
       const spec = BLOCKS[this.material];
       const hw = spec.width / 2;
       const hh = spec.height / 2;
@@ -942,6 +1019,10 @@
     }
 
     containsPoint(block, px, py) {
+      if (block.shape === "circle") {
+        const r = block.width / 2;
+        return Math.hypot(px - block.x - r, py - block.y - r) <= r;
+      }
       const hw = block.width / 2;
       const hh = block.height / 2;
       const dx = px - (block.x + hw);
@@ -994,22 +1075,109 @@
       for (const block of removal) this.removeBlock(block);
     }
 
-    clampHandlePoint(x, y) {
+    clampToView(x, y) {
       const m = 12 / this.scale;
+      const minX = Math.max(m, -this.offsetX / this.scale + m);
+      const maxX = Math.min(WORLD_WIDTH - m, (this.width - this.offsetX) / this.scale - m);
+      const minY = Math.max(m, -this.offsetY / this.scale + m);
+      const maxY = Math.min(WORLD_HEIGHT - m, (this.height - this.offsetY) / this.scale - m);
       return {
-        x: Math.min(WORLD_WIDTH - m, Math.max(m, x)),
-        y: Math.min(WORLD_HEIGHT - m, Math.max(m, y))
+        x: Math.min(Math.max(x, minX), Math.max(minX, maxX)),
+        y: Math.min(Math.max(y, minY), Math.max(minY, maxY))
       };
     }
 
-    handlePos(block) {
+    selectionButtons(block) {
       const hw = block.width / 2;
       const hh = block.height / 2;
       const rad = (block.rot || 0) * Math.PI / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
+      const gap = BUTTON_GAP_PX / this.scale;
       const ly = -(hh + HANDLE_OFFSET_PX / this.scale);
-      return this.clampHandlePoint(block.x + hw - ly * sin, block.y + hh + ly * cos);
+      const cx = block.x + hw;
+      const cy = block.y + hh;
+      return [-gap, 0, gap].map((lx) => this.clampToView(cx + lx * cos - ly * sin, cy + lx * sin + ly * cos));
+    }
+
+    resizeHandles(block) {
+      const hw = block.width / 2;
+      const hh = block.height / 2;
+      const pad = RESIZE_PAD_PX / this.scale;
+      const rad = (block.rot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const cx = block.x + hw;
+      const cy = block.y + hh;
+      const lxs = [-hw - pad, 0, hw + pad, hw + pad, hw + pad, 0, -hw - pad, -hw - pad];
+      const lys = [-hh - pad, -hh - pad, -hh - pad, 0, hh + pad, hh + pad, hh + pad, 0];
+      return lxs.map((lx, i) => ({ x: cx + lx * cos - lys[i] * sin, y: cy + lx * sin + lys[i] * cos }));
+    }
+
+    resizeHandleAt(block, wx, wy) {
+      const hit = this.handleHitRadius();
+      const handles = this.resizeHandles(block);
+      for (let i = 0; i < handles.length; i += 1) {
+        if (Math.hypot(wx - handles[i].x, wy - handles[i].y) <= hit) return i;
+      }
+      return -1;
+    }
+
+    axisAlignedGroup() {
+      let base = null;
+      for (const block of this.group) {
+        if (block.shape === "circle") continue;
+        const r = Math.round((((block.rot || 0) % 90) + 90) % 90);
+        if (base === null) base = r;
+        else if (r !== base) return false;
+      }
+      return true;
+    }
+
+    groupBoxAngle() {
+      for (const block of this.group) {
+        if (block.shape === "circle") continue;
+        return Math.round((((block.rot || 0) % 90) + 90) % 90);
+      }
+      return 0;
+    }
+
+    groupButtons() {
+      const bounds = this.groupBounds;
+      const gap = BUTTON_GAP_PX / this.scale;
+      const rad = (this.groupBoxRot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const ly = -(bounds.halfH + HANDLE_OFFSET_PX / this.scale);
+      return [-gap, 0, gap].map((lx) => this.clampToView(bounds.cx + lx * cos - ly * sin, bounds.cy + lx * sin + ly * cos));
+    }
+
+    groupResizeHandles() {
+      const bounds = this.groupBounds;
+      const pad = RESIZE_PAD_PX / this.scale;
+      const rad = (this.groupBoxRot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const hw = bounds.halfW + pad;
+      const hh = bounds.halfH + pad;
+      const aligned = this.axisAlignedGroup();
+      const lxs = [-hw, 0, hw, hw, hw, 0, -hw, -hw];
+      const lys = [-hh, -hh, -hh, 0, hh, hh, hh, 0];
+      const points = [];
+      for (let i = 0; i < 8; i += 1) {
+        if (!aligned && i % 2 === 1) continue;
+        points.push({ x: bounds.cx + lxs[i] * cos - lys[i] * sin, y: bounds.cy + lxs[i] * sin + lys[i] * cos, handle: i });
+      }
+      return points;
+    }
+
+    groupResizeHandleAt(wx, wy) {
+      const hit = this.handleHitRadius();
+      const handles = this.groupResizeHandles();
+      for (let i = 0; i < handles.length; i += 1) {
+        if (Math.hypot(wx - handles[i].x, wy - handles[i].y) <= hit) return handles[i].handle;
+      }
+      return -1;
     }
 
     handleHitRadius() {
@@ -1019,6 +1187,11 @@
     hitBlockAt(wx, wy) {
       for (let i = this.blocks.length - 1; i >= 0; i -= 1) {
         const block = this.blocks[i];
+        if (block.shape === "circle") {
+          const r = block.width / 2;
+          if (Math.hypot(wx - block.x - r, wy - block.y - r) <= r) return block;
+          continue;
+        }
         const hw = block.width / 2;
         const hh = block.height / 2;
         const dx = wx - (block.x + hw);
@@ -1056,11 +1229,21 @@
         this.drag = { mode: "erase", lastX: point.x, lastY: point.y, historyPushed: !!hit };
       } else {
         if (this.group.length >= 2 && this.groupBounds) {
-          if (Math.hypot(point.x - this.groupBounds.handle.x, point.y - this.groupBounds.handle.y) <= this.handleHitRadius()) {
+          const buttons = this.groupButtons();
+          if (Math.hypot(point.x - buttons[0].x, point.y - buttons[0].y) <= this.handleHitRadius()) {
+            this.pushHistory();
+            const copies = this.duplicateBlocks(this.group);
+            this.group = copies;
+            this.selected = null;
+            this.computeGroupBounds();
+            this.updateToolUI();
+            return;
+          }
+          if (Math.hypot(point.x - buttons[1].x, point.y - buttons[1].y) <= this.handleHitRadius()) {
             this.drag = { mode: "groupRotate", startBlocks: this.group.map((block) => ({ ...block })), historyPushed: false };
             return;
           }
-          if (Math.hypot(point.x - this.groupBounds.trash.x, point.y - this.groupBounds.trash.y) <= this.handleHitRadius()) {
+          if (Math.hypot(point.x - buttons[2].x, point.y - buttons[2].y) <= this.handleHitRadius()) {
             this.pushHistory();
             for (const block of this.group) {
               this.blocks.splice(this.blocks.indexOf(block), 1);
@@ -1071,34 +1254,35 @@
             this.updateToolUI();
             return;
           }
-          if (Math.hypot(point.x - this.groupBounds.copy.x, point.y - this.groupBounds.copy.y) <= this.handleHitRadius()) {
-            this.pushHistory();
-            const copies = this.duplicateBlocks(this.group);
-            this.group = copies;
-            this.selected = null;
-            this.computeGroupBounds();
-            this.updateToolUI();
+          const resizeHandle = this.groupResizeHandleAt(point.x, point.y);
+          if (resizeHandle >= 0) {
+            this.drag = { mode: "groupResize", handle: resizeHandle, historyPushed: false };
             return;
           }
         }
-        const handle = this.selected ? this.handlePos(this.selected) : null;
-        if (handle && Math.hypot(point.x - handle.x, point.y - handle.y) <= this.handleHitRadius()) {
-          this.drag = { block: this.selected, mode: "rotate", historyPushed: false };
-          return;
-        }
-        const trash = this.selected ? this.trashPos(this.selected) : null;
-        if (trash && Math.hypot(point.x - trash.x, point.y - trash.y) <= this.handleHitRadius()) {
-          this.pushHistory();
-          this.removeBlock(this.selected);
-          return;
-        }
-        const copyBtn = this.selected ? this.copyPos(this.selected) : null;
-        if (copyBtn && Math.hypot(point.x - copyBtn.x, point.y - copyBtn.y) <= this.handleHitRadius()) {
-          this.pushHistory();
-          const copies = this.duplicateBlocks([this.selected]);
-          this.selectSingle(copies[0]);
-          this.updateToolUI();
-          return;
+        if (this.selected) {
+          const buttons = this.selectionButtons(this.selected);
+          if (Math.hypot(point.x - buttons[0].x, point.y - buttons[0].y) <= this.handleHitRadius()) {
+            this.pushHistory();
+            const copies = this.duplicateBlocks([this.selected]);
+            this.selectSingle(copies[0]);
+            this.updateToolUI();
+            return;
+          }
+          if (this.selected.shape !== "circle" && Math.hypot(point.x - buttons[1].x, point.y - buttons[1].y) <= this.handleHitRadius()) {
+            this.drag = { block: this.selected, mode: "rotate", historyPushed: false };
+            return;
+          }
+          if (Math.hypot(point.x - buttons[2].x, point.y - buttons[2].y) <= this.handleHitRadius()) {
+            this.pushHistory();
+            this.removeBlock(this.selected);
+            return;
+          }
+          const resizeHandle = this.resizeHandleAt(this.selected, point.x, point.y);
+          if (resizeHandle >= 0) {
+            this.drag = { block: this.selected, mode: "resize", handle: resizeHandle, historyPushed: false };
+            return;
+          }
         }
         const hit = this.hitBlockAt(point.x, point.y);
         if (hit) {
@@ -1184,8 +1368,85 @@
         this.group.forEach((block, index) => {
           block.x = candidates[index].x;
           block.y = candidates[index].y;
-          block.rot = candidates[index].rot;
+          if (block.shape !== "circle") block.rot = candidates[index].rot;
         });
+        this.groupBoxRot = this.axisAlignedGroup() ? this.groupBoxAngle() : 0;
+        this.dirty = true;
+        return;
+      }
+      if (drag.mode === "groupResize") {
+        const bounds = this.groupBounds;
+        const rad = (this.groupBoxRot || 0) * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const dx = point.x - bounds.cx;
+        const dy = point.y - bounds.cy;
+        const pad = RESIZE_PAD_PX / this.scale;
+        const lx = Math.max(0, (dx * cos + dy * sin) - pad);
+        const ly = Math.max(0, (-dx * sin + dy * cos) - pad);
+        const snap = this.getSnap();
+        let scaleX = 1;
+        let scaleY = 1;
+        let circleScale = 1;
+        if (drag.handle % 2 === 0) {
+          const s = Math.max(lx / bounds.halfW, ly / bounds.halfH);
+          const base = Math.max(bounds.halfW, bounds.halfH);
+          const scale = (Math.max(0, Math.round(base * s / snap) * snap)) / base;
+          scaleX = scale;
+          scaleY = scale;
+          circleScale = scale;
+        } else if (drag.handle === 1 || drag.handle === 5) {
+          scaleY = (Math.max(0, Math.round(ly / snap) * snap)) / bounds.halfH;
+          circleScale = scaleY;
+        } else {
+          scaleX = (Math.max(0, Math.round(lx / snap) * snap)) / bounds.halfW;
+          circleScale = scaleX;
+        }
+        if (scaleX === 1 && scaleY === 1) return;
+        const candidates = this.group.map((block) => {
+          const bdx = block.x + block.width / 2 - bounds.cx;
+          const bdy = block.y + block.height / 2 - bounds.cy;
+          const blx = bdx * cos + bdy * sin;
+          const bly = -bdx * sin + bdy * cos;
+          const nx = blx * scaleX;
+          const ny = bly * scaleY;
+          const ncx = bounds.cx + nx * cos - ny * sin;
+          const ncy = bounds.cy + nx * sin + ny * cos;
+          if (block.shape === "circle") {
+            const d = Math.max(CIRCLE_RADII[0] * 2, block.width * circleScale);
+            return { x: ncx - d / 2, y: ncy - d / 2, width: d, height: d, rot: block.rot || 0 };
+          }
+          const br = Math.round(((((block.rot || 0) - this.groupBoxRot) % 180) + 180) % 180);
+          const vertical = br === 90;
+          const w = Math.max(MIN_BLOCK_WIDTH, block.width * (vertical ? scaleY : scaleX));
+          const h = Math.max(MIN_BLOCK_HEIGHT, block.height * (vertical ? scaleX : scaleY));
+          return { x: ncx - w / 2, y: ncy - h / 2, width: w, height: h, rot: block.rot || 0 };
+        });
+        let unchanged = true;
+        for (let i = 0; i < candidates.length; i += 1) {
+          const block = this.group[i];
+          if (Math.abs(candidates[i].x - block.x) > 0.01 || Math.abs(candidates[i].y - block.y) > 0.01
+            || candidates[i].width !== block.width || candidates[i].height !== block.height) {
+            unchanged = false;
+            break;
+          }
+        }
+        if (unchanged) return;
+        if (candidates.some((candidate) => {
+          const aabb = this.rotatedAABB(candidate);
+          return aabb.x < 0 || aabb.y < 0 || aabb.x + aabb.width > WORLD_WIDTH || aabb.y + aabb.height > WORLD_HEIGHT;
+        })) return;
+        if (!drag.historyPushed) {
+          this.pushHistory();
+          drag.historyPushed = true;
+        }
+        this.group.forEach((block, index) => {
+          block.x = candidates[index].x;
+          block.y = candidates[index].y;
+          block.width = candidates[index].width;
+          block.height = candidates[index].height;
+        });
+        this.computeGroupBounds();
         this.dirty = true;
         return;
       }
@@ -1207,6 +1468,51 @@
           block.rot = snapped;
           this.dirty = true;
         }
+        return;
+      }
+      if (drag.mode === "resize") {
+        const block = drag.block;
+        const cx = block.x + block.width / 2;
+        const cy = block.y + block.height / 2;
+        const rad = (block.rot || 0) * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const dx = point.x - cx;
+        const dy = point.y - cy;
+        const pad = RESIZE_PAD_PX / this.scale;
+        const lx = Math.max(0, (dx * cos + dy * sin) - pad);
+        const ly = Math.max(0, (-dx * sin + dy * cos) - pad);
+        const snap = this.getSnap();
+        let width = block.width;
+        let height = block.height;
+        if (block.shape === "circle") {
+          const diameter = Math.max(CIRCLE_RADII[0] * 2, Math.round((2 * Math.max(lx, ly)) / snap) * snap);
+          width = diameter;
+          height = diameter;
+        } else if (drag.handle % 2 === 0) {
+          const rawScale = Math.max(lx / (block.width / 2), ly / (block.height / 2));
+          const base = Math.max(block.width, block.height);
+          const scale = (Math.max(0, Math.round((base * rawScale) / snap) * snap)) / base;
+          width = Math.max(MIN_BLOCK_WIDTH, block.width * scale);
+          height = Math.max(MIN_BLOCK_HEIGHT, block.height * scale);
+        } else if (drag.handle === 1 || drag.handle === 5) {
+          height = Math.max(MIN_BLOCK_HEIGHT, Math.round((2 * ly) / snap) * snap);
+        } else {
+          width = Math.max(MIN_BLOCK_WIDTH, Math.round((2 * lx) / snap) * snap);
+        }
+        if (width === block.width && height === block.height) return;
+        const candidate = { x: cx - width / 2, y: cy - height / 2, width, height, rot: block.rot || 0 };
+        const aabb = this.rotatedAABB(candidate);
+        if (aabb.x < 0 || aabb.y < 0 || aabb.x + aabb.width > WORLD_WIDTH || aabb.y + aabb.height > WORLD_HEIGHT) return;
+        if (!drag.historyPushed) {
+          this.pushHistory();
+          drag.historyPushed = true;
+        }
+        block.x = candidate.x;
+        block.y = candidate.y;
+        block.width = width;
+        block.height = height;
+        this.dirty = true;
         return;
       }
       if (drag.mode === "groupMove") {
@@ -1348,25 +1654,44 @@
         this.groupBounds = null;
         return;
       }
+      this.groupBoxRot = this.axisAlignedGroup() ? this.groupBoxAngle() : 0;
+      const rad = this.groupBoxRot * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
       let minX = Infinity;
       let minY = Infinity;
       let maxX = -Infinity;
       let maxY = -Infinity;
       for (const block of this.group) {
-        const aabb = this.rotatedAABB(block);
-        minX = Math.min(minX, aabb.x);
-        minY = Math.min(minY, aabb.y);
-        maxX = Math.max(maxX, aabb.x + aabb.width);
-        maxY = Math.max(maxY, aabb.y + aabb.height);
+        const cx = block.x + block.width / 2;
+        const cy = block.y + block.height / 2;
+        const lx = cx * cos + cy * sin;
+        const ly = -cx * sin + cy * cos;
+        if (block.shape === "circle") {
+          const r = block.width / 2;
+          minX = Math.min(minX, lx - r);
+          maxX = Math.max(maxX, lx + r);
+          minY = Math.min(minY, ly - r);
+          maxY = Math.max(maxY, ly + r);
+          continue;
+        }
+        const br = ((block.rot || 0) - this.groupBoxRot) * Math.PI / 180;
+        const hw = block.width / 2;
+        const hh = block.height / 2;
+        const extentX = hw * Math.abs(Math.cos(br)) + hh * Math.abs(Math.sin(br));
+        const extentY = hw * Math.abs(Math.sin(br)) + hh * Math.abs(Math.cos(br));
+        minX = Math.min(minX, lx - extentX);
+        maxX = Math.max(maxX, lx + extentX);
+        minY = Math.min(minY, ly - extentY);
+        maxY = Math.max(maxY, ly + extentY);
       }
-      const cx = (minX + maxX) / 2;
-      const offset = HANDLE_OFFSET_PX / this.scale;
+      const ux = (minX + maxX) / 2;
+      const uy = (minY + maxY) / 2;
       this.groupBounds = {
-        cx,
-        cy: (minY + maxY) / 2,
-        handle: this.clampHandlePoint(cx, minY - offset),
-        trash: this.clampHandlePoint(cx, maxY + offset),
-        copy: this.clampHandlePoint(maxX + offset, (minY + maxY) / 2)
+        cx: ux * cos - uy * sin,
+        cy: ux * sin + uy * cos,
+        halfW: (maxX - minX) / 2,
+        halfH: (maxY - minY) / 2
       };
     }
 
@@ -1391,26 +1716,6 @@
       const cx = block.x + hw;
       const cy = block.y + hh;
       return cx - extX >= 0 && cx + extX <= WORLD_WIDTH && cy - extY >= 0 && cy + extY <= WORLD_HEIGHT;
-    }
-
-    trashPos(block) {
-      const hw = block.width / 2;
-      const hh = block.height / 2;
-      const rad = (block.rot || 0) * Math.PI / 180;
-      const cos = Math.cos(rad);
-      const sin = Math.sin(rad);
-      const ly = hh + HANDLE_OFFSET_PX / this.scale;
-      return this.clampHandlePoint(block.x + hw - ly * sin, block.y + hh + ly * cos);
-    }
-
-    copyPos(block) {
-      const hw = block.width / 2;
-      const hh = block.height / 2;
-      const rad = (block.rot || 0) * Math.PI / 180;
-      const cos = Math.cos(rad);
-      const sin = Math.sin(rad);
-      const lx = hw + HANDLE_OFFSET_PX / this.scale;
-      return this.clampHandlePoint(block.x + hw + lx * cos, block.y + hh + lx * sin);
     }
 
     duplicateBlocks(source) {
@@ -1445,7 +1750,7 @@
     }
 
     snapshotBlocks() {
-      return this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, id: block.id }));
+      return this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, id: block.id, shape: block.shape }));
     }
 
     pushHistory() {
@@ -1521,13 +1826,17 @@
       for (const block of this.group) this.drawBlock(context, block, true, 1);
       if (this.tool === "select") {
         if (this.selected) {
-          this.drawRotationHandle(context, this.selected);
-          this.drawTrashIcon(context, this.trashPos(this.selected));
-          this.drawCopyIcon(context, this.copyPos(this.selected));
+          this.drawSelectionBox(context, this.selected);
+          const buttons = this.selectionButtons(this.selected);
+          this.drawCopyIcon(context, buttons[0]);
+          if (this.selected.shape !== "circle") this.drawHandleKnob(context, buttons[1].x, buttons[1].y);
+          this.drawTrashIcon(context, buttons[2]);
         } else if (this.group.length >= 2 && this.groupBounds) {
-          this.drawGroupHandle(context, this.groupBounds);
-          this.drawTrashIcon(context, this.groupBounds.trash);
-          this.drawCopyIcon(context, this.groupBounds.copy);
+          this.drawGroupBox(context);
+          const buttons = this.groupButtons();
+          this.drawCopyIcon(context, buttons[0]);
+          this.drawHandleKnob(context, buttons[1].x, buttons[1].y);
+          this.drawTrashIcon(context, buttons[2]);
         }
         if (this.drag && this.drag.mode === "box") {
           const x = Math.min(this.drag.startX, this.drag.endX);
@@ -1551,6 +1860,24 @@
     drawBlock(context, block, selected, alpha, outline = null) {
       context.save();
       context.globalAlpha = alpha;
+      if (block.shape === "circle") {
+        const r = block.width / 2;
+        context.translate(block.x + r, block.y + r);
+        context.fillStyle = selected ? "#143f3b" : "#243850";
+        context.beginPath();
+        context.arc(0, 0, r, 0, Math.PI * 2);
+        context.fill();
+        context.strokeStyle = outline || (selected ? "#64fbd2" : "#65a9ff");
+        context.lineWidth = (selected ? 3 : 2) / this.scale;
+        context.stroke();
+        context.strokeStyle = selected ? "rgba(100, 251, 210, 0.5)" : "rgba(255, 209, 102, 0.32)";
+        context.lineWidth = 2 / this.scale;
+        context.beginPath();
+        context.arc(0, 0, r * 0.55, 0, Math.PI * 2);
+        context.stroke();
+        context.restore();
+        return;
+      }
       const hw = block.width / 2;
       const hh = block.height / 2;
       context.translate(block.x + hw, block.y + hh);
@@ -1591,27 +1918,57 @@
       context.fill();
     }
 
-    drawRotationHandle(context, block) {
-      const cx = block.x + block.width / 2;
-      const cy = block.y + block.height / 2;
-      const handle = this.handlePos(block);
-      context.strokeStyle = "rgba(100, 251, 210, 0.7)";
-      context.lineWidth = 2 / this.scale;
-      context.beginPath();
-      context.moveTo(cx, cy);
-      context.lineTo(handle.x, handle.y);
-      context.stroke();
-      this.drawHandleKnob(context, handle.x, handle.y);
+    drawSelectionBox(context, block) {
+      const hw = block.width / 2;
+      const hh = block.height / 2;
+      const pad = RESIZE_PAD_PX / this.scale;
+      const handleSize = 4.5 / this.scale;
+      context.save();
+      context.translate(block.x + hw, block.y + hh);
+      context.rotate((block.rot || 0) * Math.PI / 180);
+      context.strokeStyle = "rgba(100, 251, 210, 0.9)";
+      context.lineWidth = 1.5 / this.scale;
+      context.setLineDash([7 / this.scale, 5 / this.scale]);
+      context.strokeRect(-hw - pad, -hh - pad, block.width + pad * 2, block.height + pad * 2);
+      context.setLineDash([]);
+      const lxs = [-hw - pad, 0, hw + pad, hw + pad, hw + pad, 0, -hw - pad, -hw - pad];
+      const lys = [-hh - pad, -hh - pad, -hh - pad, 0, hh + pad, hh + pad, hh + pad, 0];
+      context.fillStyle = "#64fbd2";
+      context.strokeStyle = "#0d2a24";
+      context.lineWidth = 1.2 / this.scale;
+      for (let i = 0; i < 8; i += 1) {
+        context.fillRect(lxs[i] - handleSize, lys[i] - handleSize, handleSize * 2, handleSize * 2);
+        context.strokeRect(lxs[i] - handleSize, lys[i] - handleSize, handleSize * 2, handleSize * 2);
+      }
+      context.restore();
     }
 
-    drawGroupHandle(context, bounds) {
-      context.strokeStyle = "rgba(100, 251, 210, 0.7)";
-      context.lineWidth = 2 / this.scale;
-      context.beginPath();
-      context.moveTo(bounds.cx, bounds.cy);
-      context.lineTo(bounds.handle.x, bounds.handle.y);
-      context.stroke();
-      this.drawHandleKnob(context, bounds.handle.x, bounds.handle.y);
+    drawGroupBox(context) {
+      const bounds = this.groupBounds;
+      const pad = RESIZE_PAD_PX / this.scale;
+      const handleSize = 4.5 / this.scale;
+      const hw = bounds.halfW + pad;
+      const hh = bounds.halfH + pad;
+      context.save();
+      context.translate(bounds.cx, bounds.cy);
+      context.rotate((this.groupBoxRot || 0) * Math.PI / 180);
+      context.strokeStyle = "rgba(100, 251, 210, 0.9)";
+      context.lineWidth = 1.5 / this.scale;
+      context.setLineDash([7 / this.scale, 5 / this.scale]);
+      context.strokeRect(-hw, -hh, hw * 2, hh * 2);
+      context.setLineDash([]);
+      const aligned = this.axisAlignedGroup();
+      const lxs = [-hw, 0, hw, hw, hw, 0, -hw, -hw];
+      const lys = [-hh, -hh, -hh, 0, hh, hh, hh, 0];
+      context.fillStyle = "#64fbd2";
+      context.strokeStyle = "#0d2a24";
+      context.lineWidth = 1.2 / this.scale;
+      for (let i = 0; i < 8; i += 1) {
+        if (!aligned && i % 2 === 1) continue;
+        context.fillRect(lxs[i] - handleSize, lys[i] - handleSize, handleSize * 2, handleSize * 2);
+        context.strokeRect(lxs[i] - handleSize, lys[i] - handleSize, handleSize * 2, handleSize * 2);
+      }
+      context.restore();
     }
 
     drawCopyIcon(context, point) {
@@ -1667,6 +2024,15 @@
       const oy = (canvas.height - WORLD_HEIGHT * scale) / 2;
       for (const block of blocks) {
         context.save();
+        if (block.shape === "circle") {
+          const r = block.width / 2;
+          context.fillStyle = "#65a9ff";
+          context.beginPath();
+          context.arc(ox + (block.x + r) * scale, oy + (block.y + r) * scale, Math.max(1.5, r * scale), 0, Math.PI * 2);
+          context.fill();
+          context.restore();
+          continue;
+        }
         context.translate(ox + (block.x + block.width / 2) * scale, oy + (block.y + block.height / 2) * scale);
         context.rotate((block.rot || 0) * Math.PI / 180);
         const bw = block.width * scale;

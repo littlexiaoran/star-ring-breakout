@@ -624,6 +624,12 @@ kbd { padding: 2px 5px; border: 1px solid #344759; border-bottom-width: 2px; bor
   box-sizing: border-box;
 }
 .editor-material.vertical i::before { transform: rotate(90deg); }
+.editor-material.circle i::before {
+  width: var(--icon-size, 20px);
+  height: var(--icon-size, 20px);
+  margin: calc(var(--icon-size, 20px) / -2) 0 0 calc(var(--icon-size, 20px) / -2);
+  border-radius: 50%;
+}
 .editor-material.selected { background: #16344a; color: #65a9ff; border-color: rgba(101, 169, 255, 0.45); }
 .editor-material.selected i::before { background: #65a9ff; border-color: #65a9ff; }
 

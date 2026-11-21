@@ -297,6 +297,7 @@ const ENEMY_STATS = {
 const WORLD_WIDTH = 2400;
 const WORLD_HEIGHT = 1620;
 const REACH_CELL = 30;
+const POCKET_CELL = 15;
 const MIN_PLAYABLE_CELLS = 16;
 const VIEW_LONG_SIDE = 31 * 40;
 const FURNACE_WARNING_TIME = 6;
@@ -320,6 +321,10 @@ const MAP_DEFS = [
 const BOSS_ARENA = { id: "core", nameKey: "map.core.name", swatch: "#ffd166", bg: "#100d16", grid: "rgba(200, 170, 100, 0.06)" };
 
 function circleTouchesRect(x, y, radius, rect) {
+  if (rect.shape === "circle") {
+    const r = rect.width / 2;
+    return (x - rect.x - r) ** 2 + (y - rect.y - r) ** 2 < (radius + r) ** 2;
+  }
   if (!rect.rot) {
     const nearestX = clamp(x, rect.x, rect.x + rect.width);
     const nearestY = clamp(y, rect.y, rect.y + rect.height);
@@ -339,6 +344,10 @@ function circleTouchesRect(x, y, radius, rect) {
 }
 
 function distanceToRect(x, y, rect) {
+  if (rect.shape === "circle") {
+    const r = rect.width / 2;
+    return Math.max(0, Math.hypot(x - rect.x - r, y - rect.y - r) - r);
+  }
   if (!rect.rot) {
     const nearestX = clamp(x, rect.x, rect.x + rect.width);
     const nearestY = clamp(y, rect.y, rect.y + rect.height);
@@ -356,6 +365,18 @@ function distanceToRect(x, y, rect) {
 }
 
 function resolveCircleRect(entity, radius, rect) {
+  if (rect.shape === "circle") {
+    const r = rect.width / 2;
+    const dx = entity.x - rect.x - r;
+    const dy = entity.y - rect.y - r;
+    const distance = Math.hypot(dx, dy);
+    const minimumDistance = radius + r;
+    if (distance >= minimumDistance) return false;
+    const angle = distance > 0 ? Math.atan2(dy, dx) : 0;
+    entity.x = rect.x + r + Math.cos(angle) * minimumDistance;
+    entity.y = rect.y + r + Math.sin(angle) * minimumDistance;
+    return true;
+  }
   if (!rect.rot) {
     const nearestX = clamp(entity.x, rect.x, rect.x + rect.width);
     const nearestY = clamp(entity.y, rect.y, rect.y + rect.height);
@@ -1487,6 +1508,11 @@ ui.customMapEntry.addEventListener("click", () => {
 
   hasLineOfSight(x0, y0, x1, y1, clearance) {
     for (const obstacle of this.obstacles) {
+      if (obstacle.shape === "circle") {
+        const r = obstacle.width / 2;
+        if (segmentHitsCircle(x0, y0, x1, y1, obstacle.x + r, obstacle.y + r, r + clearance)) return false;
+        continue;
+      }
       const hw = obstacle.width / 2;
       const hh = obstacle.height / 2;
       const cos = Math.cos(obstacle.rot || 0);
@@ -1536,6 +1562,14 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   nearestRectPoint(x, y, rect) {
+    if (rect.shape === "circle") {
+      const r = rect.width / 2;
+      const dx = x - rect.x - r;
+      const dy = y - rect.y - r;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 1e-6) return { x: rect.x + r * 2, y: rect.y + r };
+      return { x: rect.x + r + dx / dist * r, y: rect.y + r + dy / dist * r };
+    }
     if (!rect.rot) {
       return { x: clamp(x, rect.x, rect.x + rect.width), y: clamp(y, rect.y, rect.y + rect.height) };
     }
@@ -1681,17 +1715,23 @@ ui.customMapEntry.addEventListener("click", () => {
   *getNavGrid(radius) {
     if (!this._navCache) this._navCache = Object.create(null);
     if (this._navCache[radius]) return this._navCache[radius];
-    const cell = 15;
+    const cell = 7.5;
     const cols = Math.ceil(this.world.width / cell);
     const rows = Math.ceil(this.world.height / cell);
     const blocked = new Uint8Array(cols * rows);
+    const points = new Float64Array(cols * rows * 2);
     const edges = new Int8Array(cols * rows * 8).fill(-1);
+    const nearby = new Array(cols * rows);
     const margin = radius + 14;
     const clearance = radius + 1;
+    const offset = cell / 3;
+    const offsets = [-offset, 0, offset];
     for (let idx = 0; idx < blocked.length; idx += 1) {
       if (idx % 256 === 0) yield;
       const x = (idx % cols) * cell + cell / 2;
       const y = Math.floor(idx / cols) * cell + cell / 2;
+      points[idx * 2] = x;
+      points[idx * 2 + 1] = y;
       blocked[idx] = x < margin || y < margin || x > this.world.width - margin || y > this.world.height - margin ? 1 : 0;
     }
     let checks = 0;
@@ -1708,15 +1748,44 @@ ui.customMapEntry.addEventListener("click", () => {
       const maxCol = Math.min(cols - 1, Math.floor((cx + extentX) / cell - 0.5));
       const minRow = Math.max(0, Math.ceil((cy - extentY) / cell - 0.5));
       const maxRow = Math.min(rows - 1, Math.floor((cy + extentY) / cell - 0.5));
-      for (let row = minRow; row <= maxRow; row += 1) {
-        for (let col = minCol; col <= maxCol; col += 1) {
-          if (checks++ % 32 === 0) yield;
+      const broadMinCol = Math.max(0, Math.ceil((cx - extentX - offset) / cell - 0.5));
+      const broadMaxCol = Math.min(cols - 1, Math.floor((cx + extentX + offset) / cell - 0.5));
+      const broadMinRow = Math.max(0, Math.ceil((cy - extentY - offset) / cell - 0.5));
+      const broadMaxRow = Math.min(rows - 1, Math.floor((cy + extentY + offset) / cell - 0.5));
+      for (let row = broadMinRow; row <= broadMaxRow; row += 1) {
+        for (let col = broadMinCol; col <= broadMaxCol; col += 1) {
+          if (checks++ % 64 === 0) yield;
           const idx = row * cols + col;
-          if (!blocked[idx] && distanceToRect(col * cell + cell / 2, row * cell + cell / 2, obstacle) <= clearance) blocked[idx] = 1;
+          if (nearby[idx]) nearby[idx].push(obstacle);
+          else nearby[idx] = [obstacle];
+          if (col >= minCol && col <= maxCol && row >= minRow && row <= maxRow
+            && distanceToRect(col * cell + cell / 2, row * cell + cell / 2, obstacle) <= clearance) blocked[idx] = 1;
         }
       }
     }
-    const grid = { cell, cols, rows, blocked, edges };
+    const fits = (x, y, obstacles) => {
+      if (x < margin || y < margin || x > this.world.width - margin || y > this.world.height - margin) return false;
+      return !obstacles || obstacles.every((obstacle) => distanceToRect(x, y, obstacle) > clearance);
+    };
+    // Center-only sampling disconnects passages that are wide enough for the enemy.
+    for (let idx = 0; idx < blocked.length; idx += 1) {
+      if (!blocked[idx]) continue;
+      if (idx % 16 === 0) yield;
+      const x = points[idx * 2];
+      const y = points[idx * 2 + 1];
+      let bestDistance = Infinity;
+      for (const dy of offsets) {
+        for (const dx of offsets) {
+          const distance = dx * dx + dy * dy;
+          if (!distance || distance >= bestDistance || !fits(x + dx, y + dy, nearby[idx])) continue;
+          points[idx * 2] = x + dx;
+          points[idx * 2 + 1] = y + dy;
+          bestDistance = distance;
+          blocked[idx] = 0;
+        }
+      }
+    }
+    const grid = { cell, cols, rows, blocked, points, edges };
     this._navCache[radius] = grid;
     return grid;
   }
@@ -1735,7 +1804,7 @@ ui.customMapEntry.addEventListener("click", () => {
 
   *planEnemyPath(enemy, target) {
     const grid = yield* this.getNavGrid(enemy.radius);
-    const point = (idx) => ({ x: (idx % grid.cols) * grid.cell + grid.cell / 2, y: Math.floor(idx / grid.cols) * grid.cell + grid.cell / 2 });
+    const point = (idx) => ({ x: grid.points[idx * 2], y: grid.points[idx * 2 + 1] });
     let startIdx = -1;
     let startDistance = Infinity;
     const sc = clamp(Math.floor(enemy.x / grid.cell), 0, grid.cols - 1);
@@ -1828,11 +1897,11 @@ ui.customMapEntry.addEventListener("click", () => {
         if (nc < 0 || nc >= grid.cols || nr < 0 || nr >= grid.rows) continue;
         const next = nr * grid.cols + nc;
         if (grid.blocked[next] || closed[next]) continue;
-        const cost = gScore[idx] + grid.cell * Math.hypot(dc, dr);
+        const to = point(next);
+        const cost = gScore[idx] + Math.hypot(to.x - from.x, to.y - from.y);
         if (cost >= gScore[next]) continue;
         const edge = idx * 8 + d;
         if (grid.edges[edge] === -1) {
-          const to = point(next);
           grid.edges[edge] = this.canEnemyTravel(from.x, from.y, to.x, to.y, enemy.radius) ? 1 : 0;
         }
         if (!grid.edges[edge]) continue;
@@ -2296,6 +2365,7 @@ ui.customMapEntry.addEventListener("click", () => {
         width: block.width,
         height: block.height,
         rot: (block.rot || 0) * Math.PI / 180,
+        shape: block.shape === "circle" ? "circle" : undefined,
         custom: true
       }));
       this.reachGrid = this.buildReachGrid();
@@ -2416,7 +2486,7 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   buildSpawnReach(clearance) {
-    const cell = 15;
+    const cell = POCKET_CELL;
     const cols = Math.floor(this.world.width / cell);
     const rows = Math.floor(this.world.height / cell);
     const total = cols * rows;
@@ -2431,7 +2501,9 @@ ui.customMapEntry.addEventListener("click", () => {
     if (blocked[seed]) {
       const gx = seed % cols;
       const gy = (seed / cols) | 0;
+      const playerLabel = this.reachLabelAt(this.player.x, this.player.y);
       let found = false;
+      let fallback = -1;
       for (let r = 1; r <= 12 && !found; r += 1) {
         for (let dy = -r; dy <= r && !found; dy += 1) {
           for (let dx = -r; dx <= r; dx += 1) {
@@ -2440,14 +2512,16 @@ ui.customMapEntry.addEventListener("click", () => {
             const ny = gy + dy;
             if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
             const ni = ny * cols + nx;
-            if (!blocked[ni]) {
-              seed = ni;
-              found = true;
-              break;
-            }
+            if (blocked[ni]) continue;
+            if (fallback === -1) fallback = ni;
+            if (playerLabel !== -1 && this.reachLabelAt(nx * cell, ny * cell) !== playerLabel) continue;
+            seed = ni;
+            found = true;
+            break;
           }
         }
       }
+      if (!found && fallback !== -1) seed = fallback;
     }
     if (!blocked[seed]) {
       const queue = [seed];
@@ -2478,7 +2552,8 @@ ui.customMapEntry.addEventListener("click", () => {
 
   pocketReachable(x, y, radius) {
     if (!this.reachGrid || !this.player) return true;
-    const clearance = radius;
+    // 格点中心距障碍至少 r 会误封 2r~2r+15 宽的窄道；减去半格后任何 ≥2r 的通道都能连通
+    const clearance = Math.max(0, radius - POCKET_CELL / 2);
     let grid = this.spawnReach.get(clearance);
     if (!grid) {
       grid = this.buildSpawnReach(clearance);
@@ -2561,8 +2636,9 @@ ui.customMapEntry.addEventListener("click", () => {
         if (farEnough && clear(x, y) && reachable(x, y)) return { x, y };
       }
     }
-    if (this.reachGrid && playerLabel !== -1) {
+    if (this.reachGrid) {
       const cells = this.reachGrid.label;
+      const label = playerLabel !== -1 ? playerLabel : this.reachGrid.best.label;
       const matches = [];
       for (let idx = 0; idx < cells.length; idx += 1) {
         if (cells[idx] !== playerLabel) continue;
@@ -2851,7 +2927,8 @@ ui.customMapEntry.addEventListener("click", () => {
                 y: clamp(block.y, extentY - hh, this.world.height - hh - extentY),
                 width: block.width,
                 height: block.height,
-                rot
+                rot,
+                ...(block.shape === "circle" ? { shape: "circle" } : {})
               };
             })
         : [];
@@ -3642,18 +3719,24 @@ ui.customMapEntry.addEventListener("click", () => {
       if (this.reachGrid && this.runTime >= (enemy._pocketCheckAt || 0)) {
         enemy._pocketCheckAt = this.runTime + 1.5;
         if (!this.pocketReachable(enemy.x, enemy.y, enemy.radius)) {
-          const point = this.findSpawnPoint({ ...(ENEMY_STATS[enemy.type] || ENEMY_STATS.chaser), radius: enemy.radius });
-          enemy.x = point.x;
-          enemy.y = point.y;
-          enemy.prevX = enemy.x;
-          enemy.prevY = enemy.y;
-          enemy.spawnIn = 0.45;
-          enemy.navigationWaypoints = [];
-          enemy._navPath = null;
-          enemy._navRequest = null;
-          enemy._navDirty = true;
-          this.spawnRing(enemy.x, enemy.y, enemy.radius, enemy.radius + 30, "#ff6178", 0.4);
-          continue;
+          enemy._pocketFails = (enemy._pocketFails || 0) + 1;
+          if (enemy._pocketFails >= 3) {
+            enemy._pocketFails = 0;
+            const point = this.findSpawnPoint({ ...(ENEMY_STATS[enemy.type] || ENEMY_STATS.chaser), radius: enemy.radius });
+            enemy.x = point.x;
+            enemy.y = point.y;
+            enemy.prevX = enemy.x;
+            enemy.prevY = enemy.y;
+            enemy.spawnIn = 0.45;
+            enemy.navigationWaypoints = [];
+            enemy._navPath = null;
+            enemy._navRequest = null;
+            enemy._navDirty = true;
+            this.spawnRing(enemy.x, enemy.y, enemy.radius, enemy.radius + 30, "#ff6178", 0.4);
+            continue;
+          }
+        } else {
+          enemy._pocketFails = 0;
         }
       }
       if (enemy.type === "boss") this.updateBoss(enemy, dt);
@@ -3985,6 +4068,31 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
   }
 
   reflectBullet(bullet, obstacle) {
+    if (obstacle.shape === "circle") {
+      const r = obstacle.width / 2;
+      const cx = obstacle.x + r;
+      const cy = obstacle.y + r;
+      let nx = bullet.x - cx;
+      let ny = bullet.y - cy;
+      const dist = Math.hypot(nx, ny);
+      if (dist > 1e-6) {
+        nx /= dist;
+        ny /= dist;
+      } else {
+        nx = 1;
+        ny = 0;
+      }
+      const dot = bullet.vx * nx + bullet.vy * ny;
+      if (dot < 0) {
+        bullet.vx -= 2 * dot * nx;
+        bullet.vy -= 2 * dot * ny;
+      }
+      bullet.x = cx + nx * (r + bullet.radius + 2);
+      bullet.y = cy + ny * (r + bullet.radius + 2);
+      bullet.bounces -= 1;
+      this.burst(bullet.x, bullet.y, "#64fbd2", 3, 75, 2);
+      return;
+    }
     const hw = obstacle.width / 2;
     const hh = obstacle.height / 2;
     const cx = obstacle.x + hw;
@@ -5023,6 +5131,22 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
       context.fillRect(width - 9, height - 9, 3, 3);
     };
     for (const obstacle of this.obstacles) {
+      if (obstacle.shape === "circle") {
+        const r = obstacle.width / 2;
+        context.fillStyle = "#152334";
+        context.strokeStyle = "#385166";
+        context.lineWidth = 3;
+        context.beginPath();
+        context.arc(obstacle.x + r, obstacle.y + r, r, 0, Math.PI * 2);
+        context.fill();
+        context.stroke();
+        context.strokeStyle = "rgba(255, 209, 102, 0.32)";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.arc(obstacle.x + r, obstacle.y + r, r * 0.55, 0, Math.PI * 2);
+        context.stroke();
+        continue;
+      }
       if (!obstacle.rot) {
         context.save();
         context.translate(obstacle.x, obstacle.y);
@@ -5533,6 +5657,13 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
     context.restore();
     context.fillStyle = "#263b4d";
     for (const obstacle of this.obstacles) {
+      if (obstacle.shape === "circle") {
+        const r = obstacle.width / 2;
+        context.beginPath();
+        context.arc((obstacle.x + r) * scaleX, (obstacle.y + r) * scaleY, Math.max(1, r * scaleX), 0, Math.PI * 2);
+        context.fill();
+        continue;
+      }
       if (!obstacle.rot) {
         context.fillRect(obstacle.x * scaleX, obstacle.y * scaleY, Math.max(1, obstacle.width * scaleX), Math.max(1, obstacle.height * scaleY));
       } else {
