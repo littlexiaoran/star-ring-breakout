@@ -23,7 +23,7 @@ body {
   user-select: none;
 }
 button { font: inherit; }
-button:focus-visible { outline: 2px solid var(--mint); outline-offset: 4px; }
+:focus-visible { outline: none; }
 button:disabled { opacity: 0.35; cursor: default; }
 
 #app {
@@ -307,11 +307,9 @@ kbd { padding: 2px 5px; border: 1px solid #344759; border-bottom-width: 2px; bor
 .mode-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; height: 40px; min-width: 156px; padding: 0 12px 0 14px; border: 1px solid var(--line); border-radius: 10px; background: #0b1521; color: #a9b8c9; font-size: 13px; line-height: 1; cursor: pointer; transition: background 160ms ease, color 160ms ease, border-color 160ms ease; }
 .mode-option:hover { color: var(--text); border-color: #526b7d; }
 .mode-option[aria-checked="true"] { background: var(--mint-dark); color: var(--mint); border-color: rgba(100, 251, 210, 0.45); }
-.mode-option:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .mode-name { white-space: nowrap; }
 .gear-btn { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 7px; background: #101c2a; color: #a9b8c9; font-size: 12px; line-height: 1; cursor: pointer; transition: color 160ms ease, border-color 160ms ease; }
 .gear-btn:hover { color: var(--mint); border-color: #526b7d; }
-.gear-btn:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .endless-map-note { margin: 0 0 14px; padding: 8px 14px; border: 1px dashed rgba(100, 251, 210, 0.35); border-radius: 9px; color: #8ba1b4; font-size: 11px; line-height: 1.6; text-align: left; }
 .endless-settings-overlay { z-index: 15; }
 .endless-best { display: flex; align-items: baseline; justify-content: space-between; margin: 4px 0 14px; padding: 12px 17px; border: 1px solid var(--line); border-radius: 11px; background: rgba(110, 146, 166, 0.04); }
@@ -362,10 +360,8 @@ kbd { padding: 2px 5px; border: 1px solid #344759; border-bottom-width: 2px; bor
 .segmented button { padding: 6px 10px; border: 0; border-radius: 7px; background: transparent; color: #a9b8c9; font-size: 11px; line-height: 1; white-space: nowrap; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
 .segmented button:hover { color: var(--text); }
 .segmented button[aria-checked="true"] { background: var(--mint-dark); color: var(--mint); }
-.segmented button:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .lang-btn { min-width: 84px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: #101c2a; color: #a9b8c9; font-size: 11px; cursor: pointer; transition: color 160ms ease, border-color 160ms ease; }
 .lang-btn:hover { color: var(--text); border-color: #526b7d; }
-.lang-btn:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
 .settings-help-btn { width: 100%; margin: 0 0 10px; color: inherit; cursor: pointer; }
 .row-arrow { flex-shrink: 0; color: var(--muted); font-size: 20px; line-height: 1; }
 
@@ -381,7 +377,6 @@ kbd { padding: 2px 5px; border: 1px solid #344759; border-bottom-width: 2px; bor
 .help-content summary::-webkit-details-marker { display: none; }
 .help-content summary::after { content: "+"; flex-shrink: 0; color: var(--muted); font-size: 22px; font-weight: 300; }
 .help-content details[open] > summary::after { content: "−"; }
-.help-content summary:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; border-radius: 8px; }
 .help-content summary span { display: flex; flex-direction: column; gap: 5px; }
 .help-content summary strong { color: var(--text); font-size: 14px; }
 .help-content summary small { color: var(--muted); font-size: 10px; }
@@ -657,7 +652,6 @@ kbd { padding: 2px 5px; border: 1px solid #344759; border-bottom-width: 2px; bor
 .custom-select-panel .map-actions .secondary-btn { margin-top: 0; }
 .custom-select-panel .map-cards { max-height: calc(148px * 3 + 12px * 2); overflow-y: auto; scrollbar-width: thin; scrollbar-color: #385166 transparent; }
 .custom-map-card { cursor: pointer; }
-.custom-map-card:focus-visible { outline: 2px solid #65a9ff; outline-offset: 2px; }
 .custom-map-card .card-actions { position: absolute; right: 10px; bottom: 8px; display: flex; gap: 6px; }
 .custom-map-card .card-btn { padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: #101c2a; color: #8ba1b4; font-size: 9px; cursor: pointer; transition: 150ms ease; }
 .custom-map-card .card-btn:hover { color: var(--text); border-color: #526b7d; }

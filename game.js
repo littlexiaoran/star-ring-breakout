@@ -1047,6 +1047,7 @@ class Game {
     this.endlessSpdMul = 1;
     this.endlessMapIndex = 0;
     this.runMapOverride = null;
+    this.lastRunMapId = null;
     this.fixedEndlessMap = null;
     this.customMaps = this.loadCustomMaps();
     this.customCfg = { endless: true, bossArena: true };
@@ -1151,7 +1152,11 @@ class Game {
     ui.endlessSettings.addEventListener("click", (event) => {
       if (event.target === ui.endlessSettings) this.closeEndlessSettings();
     });
-    ui.restartButton.addEventListener("click", () => this.start());
+    ui.restartButton.addEventListener("click", () => {
+      const lastMap = this.lastRunMapId ? this.getMap(this.lastRunMapId) : null;
+      if (lastMap && lastMap.custom && this.startCustomRun(lastMap.id) === true) return;
+      this.start();
+    });
     ui.pauseMenuButton.addEventListener("click", () => this.goToMenu());
     ui.resumeButton.addEventListener("click", () => this.resume());
     ui.menuButton.addEventListener("click", () => this.goToMenu());
@@ -2324,7 +2329,7 @@ ui.customMapEntry.addEventListener("click", () => {
       const dx = goalPoint.x - portal.x;
       const dy = goalPoint.y - portal.y;
       const distance = Math.hypot(dx, dy);
-      const approachRadius = enemy.radius + 29;
+      const approachRadius = enemy.radius + Math.max(29, (portal.radius || 27) + 2);
       if (distance > 0 && distance < approachRadius && approachRadius - distance < enemy.radius + this.player.radius) {
         goalPoint.x = portal.x + dx / distance * approachRadius;
         goalPoint.y = portal.y + dy / distance * approachRadius;
@@ -2390,11 +2395,11 @@ ui.customMapEntry.addEventListener("click", () => {
 
   avoidEnemyPortals(enemy) {
     if (!this.portals.length) return;
-    const radius = enemy.radius + 28;
     for (let i = 0; i < this.portals.length; i += 1) {
       if (this.portals[i].target == null) continue;
       if (i === enemy.navigationPortal || (((enemy.portalCooldowns || [])[i] || 0) > 0 && i === enemy.portalExitIndex)) continue;
       const portal = this.portals[i];
+      const radius = enemy.radius + 28 + Math.max(0, (portal.radius || 27) - 27);
       const sx = enemy.prevX - portal.x;
       const sy = enemy.prevY - portal.y;
       const mx = enemy.x - enemy.prevX;
@@ -2428,7 +2433,7 @@ ui.customMapEntry.addEventListener("click", () => {
     for (let index = 0; index < this.portals.length; index += 1) {
       const portal = this.portals[index];
       if (portal.target == null || (cooldowns[index] || 0) > 0) continue;
-      if (distanceSquared(entity, portal) > (entity.radius + 24) ** 2) continue;
+      if (distanceSquared(entity, portal) > (entity.radius + (portal.radius || 24)) ** 2) continue;
       const target = this.portals[portal.target];
       if (this.obstacles.some((obstacle) => circleTouchesRect(target.x, target.y, entity.radius + 2, obstacle))) continue;
       const oldX = entity.x;
@@ -2539,6 +2544,7 @@ ui.customMapEntry.addEventListener("click", () => {
         this.portals.push({
           x: block.x + block.width / 2,
           y: block.y + block.height / 2,
+          radius: Math.max(10, Math.min(block.width, block.height) / 2),
           target: null,
           color: PORTAL_UNLINKED_COLOR
         });
@@ -2793,7 +2799,7 @@ ui.customMapEntry.addEventListener("click", () => {
       }
       let portalClearance = Infinity;
       for (const portal of this.portals) {
-        const d = Math.hypot(x - portal.x, y - portal.y);
+        const d = Math.hypot(x - portal.x, y - portal.y) - Math.max(0, (portal.radius || 27) - 27);
         if (d < portalClearance) portalClearance = d;
       }
       if (clearance >= 24 && portalClearance >= 72) {
@@ -2817,7 +2823,35 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   portalSpawnClear(x, y, margin) {
-    return this.portals.every((portal) => distanceSquared(x, y, portal) > margin ** 2);
+    return this.portals.every((portal) => distanceSquared(x, y, portal) > (margin + Math.max(0, (portal.radius || 27) - 27)) ** 2);
+  }
+
+  keepSpawnOffPortals(x, y, radius) {
+    let px = x;
+    let py = y;
+    for (let pass = 0; pass < 3; pass += 1) {
+      let moved = false;
+      for (const portal of this.portals) {
+        const minDist = (portal.radius || 27) + radius + 12;
+        let dx = px - portal.x;
+        let dy = py - portal.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist >= minDist) continue;
+        if (dist < 0.001) {
+          const angle = random(0, Math.PI * 2);
+          dx = Math.cos(angle);
+          dy = Math.sin(angle);
+        } else {
+          dx /= dist;
+          dy /= dist;
+        }
+        px = clamp(portal.x + dx * minDist, radius, this.world.width - radius);
+        py = clamp(portal.y + dy * minDist, radius, this.world.height - radius);
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    return { x: px, y: py };
   }
 
   findSpawnPoint(stats) {
@@ -3218,7 +3252,7 @@ ui.customMapEntry.addEventListener("click", () => {
     if (!allowed) return "disabled";
     this.runMapOverride = map.id;
     if (this.mode === "endless") {
-      this._endlessMapTypeSaved = this.endless.map;
+      if (this._endlessMapTypeSaved == null) this._endlessMapTypeSaved = this.endless.map;
       this.endless.map = "fixed";
     }
     this.start();
@@ -3414,6 +3448,7 @@ ui.customMapEntry.addEventListener("click", () => {
     this.endlessSpdMul = 1;
     const startMap = this.runMapOverride ? this.getMap(this.runMapOverride) : this.getMap(this.selectedMapId);
     this.runMapOverride = null;
+    this.lastRunMapId = startMap ? startMap.id : this.selectedMapId;
     if (this.mode === "endless") {
       this.endlessRound = 1;
       this.map = startMap;
@@ -3882,6 +3917,9 @@ ui.customMapEntry.addEventListener("click", () => {
         }
       }
     }
+    const offPortal = this.keepSpawnOffPortals(x, y, stats.radius);
+    x = offPortal.x;
+    y = offPortal.y;
     const scale = type === "boss" || type === "mite" || type === "prism" ? 1 : 1 + (this.wave - 1) * 0.13;
     const enemyHp = Math.round(stats.hp * scale * this.endlessHpMul);
     const enemy = {
@@ -5166,24 +5204,25 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
       }
     }
     this.portals.forEach((portal, index) => {
+      const radius = portal.radius || 27;
       context.save();
       context.strokeStyle = portal.color;
       context.globalAlpha = 0.08;
       context.fillStyle = portal.color;
       context.beginPath();
-      context.arc(portal.x, portal.y, 27, 0, Math.PI * 2);
+      context.arc(portal.x, portal.y, radius, 0, Math.PI * 2);
       context.fill();
       context.globalAlpha = 1;
       context.stroke();
       if (!compact) {
         context.translate(portal.x, portal.y);
-        polygon(context, 4, 15, this.mapTime * 1.2);
+        polygon(context, 4, 15 * Math.max(0.5, radius / 27), this.mapTime * 1.2);
         context.stroke();
         const cooldown = this.portalCooldowns[index] || 0;
         if (cooldown > 0) {
           context.strokeStyle = "#ffd166";
           context.beginPath();
-          context.arc(0, 0, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cooldown / 3);
+          context.arc(0, 0, radius + 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cooldown / 3);
           context.stroke();
         }
       }

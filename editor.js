@@ -20,6 +20,7 @@
   const BRUSH_SIMPLIFY_TOLERANCE = 2;
   const BRUSH_MAX_POINTS = 254;
   const PORTAL_DIAMETER = 54;
+  const MIN_PORTAL_DIAMETER = 20;
   const PORTAL_UNLINKED_COLOR = "#65a9ff";
   const PORTAL_COLORS = ["#64fbd2", "#ad8cff", "#ffd166", "#ff8a65", "#6ee7ff", "#ff9dab", "#7dff8a", "#f6a5ff", "#ffe28a", "#ffffff"];
   const HANDLE_OFFSET_PX = 30;
@@ -189,6 +190,7 @@
   const clampNum = (value, min, max) => Math.min(max, Math.max(min, value));
   const CODE_PREFIX = "SRB4.";
   const CODE_PREFIX_V5 = "SRB5.";
+  const CODE_PREFIX_V6 = "SRB6.";
   const LEGACY_CODE_PREFIX = "SRB3.";
   const LEGACY2_CODE_PREFIX = "SRB2.";
   const CODE_KEY = [0x5a, 0xa5, 0x3c, 0xc3];
@@ -243,6 +245,8 @@
     for (const byte of descBytes) push(byte, 8);
     const blocks = (entry.blocks || []).slice(0, 255);
     const hasStroke = blocks.some((block) => block.shape === "stroke");
+    const hasSizedPortal = blocks.some((block) => block.shape === "portal" && Math.round((Number(block.width) || PORTAL_DIAMETER) / 2) !== PORTAL_DIAMETER / 2);
+    const needsV6 = hasStroke || hasSizedPortal;
     push(blocks.length, 8);
     for (const block of blocks) {
       push(Math.round((clampNum(Number(block.x) || 0, -90, 2400) + 90) / 5), 9);
@@ -256,6 +260,7 @@
       if (shapeCode === 2) {
         push(block.link == null ? 255 : clampNum(Math.round(Number(block.link) || 0), 0, 254), 8);
         push(block.link == null ? 0 : clampNum(Math.round(Number(block.pairColor) || 0), 0, 15), 4);
+        if (needsV6) push(clampNum(Math.round((Number(block.width) || PORTAL_DIAMETER) / 2), 10, 1023), 10);
       } else if (shapeCode === 3) {
         const points = (block.points || []).slice(0, 255);
         push(clampNum(Math.round((((Number(block.rot) || 0) % 360 + 360) % 360) * 2), 0, 1023), 10);
@@ -277,7 +282,7 @@
     const bytes = [...data, hash >> 8, hash & 0xff].map((byte, index) => byte ^ CODE_KEY[index % CODE_KEY.length]);
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
-    const prefix = hasStroke ? CODE_PREFIX_V5 : CODE_PREFIX;
+    const prefix = needsV6 ? CODE_PREFIX_V6 : CODE_PREFIX;
     return prefix + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
@@ -286,7 +291,10 @@
     const trimmed = code.trim();
     let payload;
     let version = 0;
-    if (trimmed.startsWith(CODE_PREFIX_V5)) {
+    if (trimmed.startsWith(CODE_PREFIX_V6)) {
+      payload = trimmed.slice(CODE_PREFIX_V6.length);
+      version = 6;
+    } else if (trimmed.startsWith(CODE_PREFIX_V5)) {
       payload = trimmed.slice(CODE_PREFIX_V5.length);
       version = 5;
     } else if (trimmed.startsWith(CODE_PREFIX)) {
@@ -370,7 +378,13 @@
         const link = read(8);
         const pairColor = read(4);
         if (link === null || pairColor === null) return null;
-        blocks.push({ x: qx * 5 - 90, y: qy * 5, width: PORTAL_DIAMETER, height: PORTAL_DIAMETER, rot: 0, shape: "portal", link: link === 255 ? null : link, pairColor: link === 255 ? null : pairColor % PORTAL_COLORS.length });
+        let size = PORTAL_DIAMETER;
+        if (version >= 6) {
+          const radius = read(10);
+          if (radius === null) return null;
+          size = Math.max(MIN_PORTAL_DIAMETER, radius * 2);
+        }
+        blocks.push({ x: qx * 5 - 90, y: qy * 5, width: size, height: size, rot: 0, shape: "portal", link: link === 255 ? null : link, pairColor: link === 255 ? null : pairColor % PORTAL_COLORS.length });
       } else if (shapeCode === 3) {
         if (version < 5) return null;
         const preciseRot = read(10);
@@ -554,9 +568,18 @@
           this.requestExit();
           return;
         }
-        if (event.code === "KeyR") {
+        if (event.code === "KeyR" && !event.ctrlKey && !event.metaKey && !event.altKey) {
           event.preventDefault();
           this.toggleMaterial();
+          return;
+        }
+        if (event.code === "Backspace" || event.code === "Delete") {
+          const targets = this.group.length >= 2 ? this.group.slice() : this.selected ? [this.selected] : [];
+          if (!targets.length) return;
+          event.preventDefault();
+          this.pushHistory();
+          for (const block of targets) this.removeBlock(block);
+          this.updateToolUI();
           return;
         }
         if (event.code === "Equal" || event.code === "NumpadAdd" || event.code === "Minus" || event.code === "NumpadSubtract") {
@@ -1661,7 +1684,7 @@
             this.removeBlock(this.selected);
             return;
           }
-          const resizeHandle = this.selected.shape === "portal" ? -1 : this.resizeHandleAt(this.selected, point.x, point.y);
+          const resizeHandle = this.resizeHandleAt(this.selected, point.x, point.y);
           if (resizeHandle >= 0) {
             this.drag = { block: this.selected, mode: "resize", handle: resizeHandle, historyPushed: false };
             return;
@@ -1807,10 +1830,10 @@
           const ny = bly * scaleY;
           const ncx = bounds.cx + nx * cos - ny * sin;
           const ncy = bounds.cy + nx * sin + ny * cos;
-          if (block.shape === "portal") return { ...block };
-          if (block.shape === "circle") {
-            const d = Math.max(CIRCLE_RADII[0] * 2, block.width * circleScale);
-            return { x: ncx - d / 2, y: ncy - d / 2, width: d, height: d, rot: block.rot || 0 };
+          if (block.shape === "circle" || block.shape === "portal") {
+            const minimum = block.shape === "circle" ? CIRCLE_RADII[0] * 2 : MIN_PORTAL_DIAMETER;
+            const d = Math.max(minimum, block.width * circleScale);
+            return { x: ncx - d / 2, y: ncy - d / 2, width: d, height: d, rot: 0 };
           }
           const br = Math.round(((((block.rot || 0) - this.groupBoxRot) % 180) + 180) % 180);
           const vertical = br === 90;
@@ -1881,8 +1904,9 @@
         const snap = this.getSnap();
         let width = block.width;
         let height = block.height;
-        if (block.shape === "circle") {
-          const diameter = Math.max(CIRCLE_RADII[0] * 2, Math.round((2 * Math.max(lx, ly)) / snap) * snap);
+        if (block.shape === "circle" || block.shape === "portal") {
+          const minimum = block.shape === "circle" ? CIRCLE_RADII[0] * 2 : MIN_PORTAL_DIAMETER;
+          const diameter = Math.max(minimum, Math.round((2 * Math.max(lx, ly)) / snap) * snap);
           width = diameter;
           height = diameter;
         } else if (drag.handle % 2 === 0) {
@@ -2456,10 +2480,6 @@
       context.setLineDash([7 / this.scale, 5 / this.scale]);
       context.strokeRect(-hw - pad, -hh - pad, block.width + pad * 2, block.height + pad * 2);
       context.setLineDash([]);
-      if (block.shape === "portal") {
-        context.restore();
-        return;
-      }
       const lxs = [-hw - pad, 0, hw + pad, hw + pad, hw + pad, 0, -hw - pad, -hw - pad];
       const lys = [-hh - pad, -hh - pad, -hh - pad, 0, hh + pad, hh + pad, hh + pad, 0];
       context.fillStyle = "#64fbd2";
