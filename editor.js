@@ -6,10 +6,19 @@
     h: { width: 240, height: 60 },
     v: { width: 240, height: 60, rot: 90 }
   };
-  const MATERIALS = ["h", "v", "c", "p"];
+  const MATERIALS = ["h", "v", "c", "p", "b"];
   const CIRCLE_RADII = [18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62];
   const DEFAULT_CIRCLE_SIZE = 6;
   const CIRCLE_SIZE_KEY = "star-ring-circle-size";
+  const BRUSH_WIDTH_KEY = "star-ring-brush-width";
+  const BRUSH_MIN_WIDTH = 8;
+  const BRUSH_MAX_WIDTH = 64;
+  const BRUSH_WIDTH_STEP = 4;
+  const DEFAULT_BRUSH_WIDTH = 20;
+  const BRUSH_SAMPLE_STEP = 3;
+  const BRUSH_MIN_LENGTH = 2;
+  const BRUSH_SIMPLIFY_TOLERANCE = 2;
+  const BRUSH_MAX_POINTS = 254;
   const PORTAL_DIAMETER = 54;
   const PORTAL_UNLINKED_COLOR = "#65a9ff";
   const PORTAL_COLORS = ["#64fbd2", "#ad8cff", "#ffd166", "#ff8a65", "#6ee7ff", "#ff9dab", "#7dff8a", "#f6a5ff", "#ffe28a", "#ffffff"];
@@ -27,6 +36,9 @@
   const STORAGE_KEY = "star-ring-custom-maps";
 
   function distToRect(x, y, rect) {
+    if (rect.shape === "stroke") {
+      return Math.max(0, distanceToPolyline(x, y, rect.points) - (rect.strokeWidth || 0) / 2);
+    }
     if (rect.shape === "circle") {
       const r = rect.width / 2;
       return Math.max(0, Math.hypot(x - rect.x - r, y - rect.y - r) - r);
@@ -48,6 +60,69 @@
     const nearestLX = lx < -hw ? -hw : lx > hw ? hw : lx;
     const nearestLY = ly < -hh ? -hh : ly > hh ? hh : ly;
     return Math.hypot(lx - nearestLX, ly - nearestLY);
+  }
+
+  function distancePointToSegment(x, y, ax, ay, bx, by) {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lengthSquared = dx * dx + dy * dy;
+    const t = lengthSquared === 0 ? 0 : clampNum(((x - ax) * dx + (y - ay) * dy) / lengthSquared, 0, 1);
+    return Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
+  }
+
+  function distanceToPolyline(x, y, points) {
+    if (!points || !points.length) return Infinity;
+    if (points.length === 1) return Math.hypot(x - points[0].x, y - points[0].y);
+    let best = Infinity;
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const distance = distancePointToSegment(x, y, points[i].x, points[i].y, points[i + 1].x, points[i + 1].y);
+      if (distance < best) best = distance;
+    }
+    return best;
+  }
+
+  function simplifyPath(points, tolerance) {
+    if (points.length <= 2) return points.slice();
+    const keep = new Uint8Array(points.length);
+    keep[0] = 1;
+    keep[points.length - 1] = 1;
+    const stack = [[0, points.length - 1]];
+    while (stack.length) {
+      const [first, last] = stack.pop();
+      let maxDistance = -1;
+      let index = -1;
+      for (let i = first + 1; i < last; i += 1) {
+        const distance = distancePointToSegment(points[i].x, points[i].y, points[first].x, points[first].y, points[last].x, points[last].y);
+        if (distance > maxDistance) {
+          maxDistance = distance;
+          index = i;
+        }
+      }
+      if (maxDistance > tolerance && index !== -1) {
+        keep[index] = 1;
+        stack.push([first, index], [index, last]);
+      }
+    }
+    const result = [];
+    for (let i = 0; i < points.length; i += 1) {
+      if (keep[i]) result.push(points[i]);
+    }
+    return result;
+  }
+
+  function traceSmoothPath(context, points) {
+    if (!points.length) return;
+    context.moveTo(points[0].x, points[0].y);
+    if (points.length === 2) {
+      context.lineTo(points[1].x, points[1].y);
+      return;
+    }
+    for (let i = 1; i < points.length - 1; i += 1) {
+      const midX = (points[i].x + points[i + 1].x) / 2;
+      const midY = (points[i].y + points[i + 1].y) / 2;
+      context.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+    }
+    context.lineTo(points[points.length - 1].x, points[points.length - 1].y);
   }
 
   const byId = (id) => document.getElementById(id);
@@ -113,6 +188,7 @@
 
   const clampNum = (value, min, max) => Math.min(max, Math.max(min, value));
   const CODE_PREFIX = "SRB4.";
+  const CODE_PREFIX_V5 = "SRB5.";
   const LEGACY_CODE_PREFIX = "SRB3.";
   const LEGACY2_CODE_PREFIX = "SRB2.";
   const CODE_KEY = [0x5a, 0xa5, 0x3c, 0xc3];
@@ -128,6 +204,20 @@
   function saveCircleSize(size) {
     try {
       localStorage.setItem(CIRCLE_SIZE_KEY, String(size));
+    } catch {}
+  }
+
+  function loadBrushWidth() {
+    try {
+      const saved = parseInt(localStorage.getItem(BRUSH_WIDTH_KEY), 10);
+      if (Number.isInteger(saved)) return clampNum(saved, BRUSH_MIN_WIDTH, BRUSH_MAX_WIDTH);
+    } catch {}
+    return DEFAULT_BRUSH_WIDTH;
+  }
+
+  function saveBrushWidth(width) {
+    try {
+      localStorage.setItem(BRUSH_WIDTH_KEY, String(width));
     } catch {}
   }
 
@@ -152,18 +242,29 @@
     push(descBytes.length, 8);
     for (const byte of descBytes) push(byte, 8);
     const blocks = (entry.blocks || []).slice(0, 255);
+    const hasStroke = blocks.some((block) => block.shape === "stroke");
     push(blocks.length, 8);
     for (const block of blocks) {
       push(Math.round((clampNum(Number(block.x) || 0, -90, 2400) + 90) / 5), 9);
       push(Math.round(clampNum(Number(block.y) || 0, 0, 1620) / 5), 9);
       push(Math.round(clampNum(Number(block.width) || 0, 0, 2400) / 5), 9);
       push(Math.round(clampNum(Number(block.height) || 0, 0, 1620) / 5), 9);
-      push(((Math.round((Number(block.rot) || 0) / 15) % 24) + 24) % 24, 5);
-      const shapeCode = block.shape === "circle" ? 1 : block.shape === "portal" ? 2 : 0;
+      const isStroke = block.shape === "stroke";
+      push(isStroke ? 0 : ((Math.round((Number(block.rot) || 0) / 15) % 24) + 24) % 24, 5);
+      const shapeCode = block.shape === "circle" ? 1 : block.shape === "portal" ? 2 : isStroke ? 3 : 0;
       push(shapeCode, 2);
       if (shapeCode === 2) {
         push(block.link == null ? 255 : clampNum(Math.round(Number(block.link) || 0), 0, 254), 8);
         push(block.link == null ? 0 : clampNum(Math.round(Number(block.pairColor) || 0), 0, 15), 4);
+      } else if (shapeCode === 3) {
+        const points = (block.points || []).slice(0, 255);
+        push(clampNum(Math.round((((Number(block.rot) || 0) % 360 + 360) % 360) * 2), 0, 1023), 10);
+        push(clampNum(Math.round(Number(block.strokeWidth) || DEFAULT_BRUSH_WIDTH), 4, 96), 7);
+        push(points.length, 8);
+        for (const point of points) {
+          push(clampNum(Math.round((clampNum(Number(point.x) || 0, -1, 1) + 1) * 2047.5), 0, 4095), 12);
+          push(clampNum(Math.round((clampNum(Number(point.y) || 0, -1, 1) + 1) * 2047.5), 0, 4095), 12);
+        }
       }
     }
     const data = [];
@@ -176,7 +277,8 @@
     const bytes = [...data, hash >> 8, hash & 0xff].map((byte, index) => byte ^ CODE_KEY[index % CODE_KEY.length]);
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
-    return CODE_PREFIX + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const prefix = hasStroke ? CODE_PREFIX_V5 : CODE_PREFIX;
+    return prefix + btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
   function decodeMapCode(code) {
@@ -184,7 +286,10 @@
     const trimmed = code.trim();
     let payload;
     let version = 0;
-    if (trimmed.startsWith(CODE_PREFIX)) {
+    if (trimmed.startsWith(CODE_PREFIX_V5)) {
+      payload = trimmed.slice(CODE_PREFIX_V5.length);
+      version = 5;
+    } else if (trimmed.startsWith(CODE_PREFIX)) {
       payload = trimmed.slice(CODE_PREFIX.length);
       version = 4;
     } else if (trimmed.startsWith(LEGACY_CODE_PREFIX)) {
@@ -256,7 +361,7 @@
       let shapeCode = 0;
       if (version >= 4) {
         shapeCode = read(2);
-        if (shapeCode === null || shapeCode > 2) return null;
+        if (shapeCode === null || shapeCode > (version >= 5 ? 3 : 2)) return null;
       } else if (version >= 3) {
         shapeCode = read(1);
         if (shapeCode === null) return null;
@@ -266,6 +371,20 @@
         const pairColor = read(4);
         if (link === null || pairColor === null) return null;
         blocks.push({ x: qx * 5 - 90, y: qy * 5, width: PORTAL_DIAMETER, height: PORTAL_DIAMETER, rot: 0, shape: "portal", link: link === 255 ? null : link, pairColor: link === 255 ? null : pairColor % PORTAL_COLORS.length });
+      } else if (shapeCode === 3) {
+        if (version < 5) return null;
+        const preciseRot = read(10);
+        const strokeWidth = read(7);
+        const count = read(8);
+        if (preciseRot === null || strokeWidth === null || count === null || count < 2) return null;
+        const points = [];
+        for (let k = 0; k < count; k += 1) {
+          const nx = read(12);
+          const ny = read(12);
+          if (nx === null || ny === null) return null;
+          points.push({ x: Math.round((nx / 2047.5 - 1) * 10000) / 10000, y: Math.round((ny / 2047.5 - 1) * 10000) / 10000 });
+        }
+        blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: preciseRot * 0.5, shape: "stroke", strokeWidth: Math.max(4, strokeWidth), points });
       } else if (shapeCode === 1) {
         blocks.push({ x: qx * 5 - 90, y: qy * 5, width: qw * 5, height: qh * 5, rot: 0, shape: "circle" });
       } else {
@@ -328,6 +447,7 @@
       this.tool = "place";
       this.material = "h";
       this.circleSize = DEFAULT_CIRCLE_SIZE;
+      this.brushWidth = loadBrushWidth();
       this.selected = null;
       this.group = [];
       this.groupBounds = null;
@@ -402,14 +522,19 @@
       });
       els.canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
       els.canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
-      els.canvas.addEventListener("pointerup", () => this.onPointerUp());
-      els.canvas.addEventListener("pointercancel", () => this.onPointerUp());
+      els.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
+      els.canvas.addEventListener("pointercancel", (event) => this.onPointerUp(event));
       els.canvas.addEventListener("wheel", (event) => {
-        if (!this.editorOpen || !els.dialog.hidden || this.material !== "c") return;
+        if (!this.editorOpen || !els.dialog.hidden || (this.material !== "c" && this.material !== "b")) return;
         event.preventDefault();
         const delta = event.deltaY < 0 ? 1 : -1;
-        this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
-        saveCircleSize(this.circleSize);
+        if (this.material === "c") {
+          this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
+          saveCircleSize(this.circleSize);
+        } else {
+          this.brushWidth = clampNum(this.brushWidth + delta * BRUSH_WIDTH_STEP, BRUSH_MIN_WIDTH, BRUSH_MAX_WIDTH);
+          saveBrushWidth(this.brushWidth);
+        }
         this.refreshMaterialButton(false);
       });
       els.canvas.addEventListener("pointerleave", () => {
@@ -435,11 +560,16 @@
           return;
         }
         if (event.code === "Equal" || event.code === "NumpadAdd" || event.code === "Minus" || event.code === "NumpadSubtract") {
-          if (this.material === "c") {
+          if (this.material === "c" || this.material === "b") {
             event.preventDefault();
             const delta = event.code === "Minus" || event.code === "NumpadSubtract" ? -1 : 1;
-            this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
-            saveCircleSize(this.circleSize);
+            if (this.material === "c") {
+              this.circleSize = clampNum(this.circleSize + delta, 0, CIRCLE_RADII.length - 1);
+              saveCircleSize(this.circleSize);
+            } else {
+              this.brushWidth = clampNum(this.brushWidth + delta * BRUSH_WIDTH_STEP, BRUSH_MIN_WIDTH, BRUSH_MAX_WIDTH);
+              saveBrushWidth(this.brushWidth);
+            }
             this.refreshMaterialButton(false);
             return;
           }
@@ -472,6 +602,7 @@
       if (this.editorOpen || this.selectOpen) return;
       this.editorOpen = true;
       this.circleSize = loadCircleSize();
+      this.brushWidth = loadBrushWidth();
       this.blocks = (existingMap ? existingMap.blocks : []).map((block, index) => ({ ...block, id: index + 1 }));
       for (const block of this.blocks) {
         if (block.shape === "portal" && block.link != null) {
@@ -766,7 +897,11 @@
       const cols = Math.ceil(WORLD_WIDTH / REACH_CELL);
       const rows = Math.ceil(WORLD_HEIGHT / REACH_CELL);
       const total = cols * rows;
-      const obstacles = this.blocks.filter((block) => block.shape !== "portal").map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
+      const obstacles = this.blocks.filter((block) => block.shape !== "portal").map((block) => (
+        block.shape === "stroke"
+          ? { shape: "stroke", points: this.strokeWorldPoints(block), strokeWidth: block.strokeWidth || DEFAULT_BRUSH_WIDTH }
+          : { x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }
+      ));
       const blocked = new Uint8Array(total);
       for (let idx = 0; idx < total; idx += 1) {
         const x = (idx % cols) * REACH_CELL + REACH_CELL / 2;
@@ -806,7 +941,11 @@
     }
 
     checkBossSpace() {
-      const obstacles = this.blocks.filter((block) => block.shape !== "portal").map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }));
+      const obstacles = this.blocks.filter((block) => block.shape !== "portal").map((block) => (
+        block.shape === "stroke"
+          ? { shape: "stroke", points: this.strokeWorldPoints(block), strokeWidth: block.strokeWidth || DEFAULT_BRUSH_WIDTH }
+          : { x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, shape: block.shape }
+      ));
       const cols = Math.ceil(WORLD_WIDTH / REACH_CELL);
       const rows = Math.ceil(WORLD_HEIGHT / REACH_CELL);
       const total = cols * rows;
@@ -854,6 +993,13 @@
           saved.rot = 0;
           saved.link = block.link == null ? null : this.blocks.findIndex((candidate) => candidate.id === block.link);
           saved.pairColor = block.pairColor ?? null;
+        } else if (block.shape === "stroke") {
+          saved.shape = "stroke";
+          saved.strokeWidth = block.strokeWidth || DEFAULT_BRUSH_WIDTH;
+          saved.points = (block.points || []).map((point) => ({
+            x: Math.round(point.x * 10000) / 10000,
+            y: Math.round(point.y * 10000) / 10000
+          }));
         }
         return saved;
       });
@@ -1004,6 +1150,9 @@
         if (button.dataset.mat === "c") {
           button.style.setProperty("--icon-size", `${14 + this.circleSize * 12 / (CIRCLE_RADII.length - 1)}px`);
         }
+        if (button.dataset.mat === "b") {
+          button.style.setProperty("--icon-size", `${10 + (this.brushWidth - BRUSH_MIN_WIDTH) * 16 / (BRUSH_MAX_WIDTH - BRUSH_MIN_WIDTH)}px`);
+        }
       });
     }
 
@@ -1054,6 +1203,88 @@
       this.dirty = true;
     }
 
+    clampBrushPoint(point, width = this.brushWidth) {
+      const half = width / 2;
+      return {
+        x: clampNum(point.x, half, WORLD_WIDTH - half),
+        y: clampNum(point.y, half, WORLD_HEIGHT - half)
+      };
+    }
+
+    finishBrush() {
+      const drag = this.drag;
+      if (!drag || drag.mode !== "brush") return;
+      const strokeWidth = drag.strokeWidth;
+      const half = strokeWidth / 2;
+      const raw = drag.points.slice();
+      const end = this.clampBrushPoint(this.worldPoint(), drag.strokeWidth);
+      const last = raw[raw.length - 1];
+      if (raw.length && Math.hypot(end.x - last.x, end.y - last.y) > 0.5) raw.push(end);
+      let length = 0;
+      for (let i = 1; i < raw.length; i += 1) {
+        length += Math.hypot(raw[i].x - raw[i - 1].x, raw[i].y - raw[i - 1].y);
+      }
+      if (raw.length < 2 || length < BRUSH_MIN_LENGTH) return;
+      const simplified = simplifyPath(raw, BRUSH_SIMPLIFY_TOLERANCE);
+      if (simplified.length < 2) return;
+      const points = simplified.map((point) => ({
+        x: clampNum(point.x, half, WORLD_WIDTH - half),
+        y: clampNum(point.y, half, WORLD_HEIGHT - half)
+      }));
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const point of points) {
+        if (point.x < minX) minX = point.x;
+        if (point.x > maxX) maxX = point.x;
+        if (point.y < minY) minY = point.y;
+        if (point.y > maxY) maxY = point.y;
+      }
+      const width = Math.min(WORLD_WIDTH, maxX - minX + strokeWidth);
+      const height = Math.min(WORLD_HEIGHT, maxY - minY + strokeWidth);
+      const x = clampNum((minX + maxX) / 2 - width / 2, 0, WORLD_WIDTH - width);
+      const y = clampNum((minY + maxY) / 2 - height / 2, 0, WORLD_HEIGHT - height);
+      const cx = x + width / 2;
+      const cy = y + height / 2;
+      this.pushHistory();
+      this.blocks.push({
+        id: this.nextBlockId,
+        x,
+        y,
+        width,
+        height,
+        rot: 0,
+        shape: "stroke",
+        strokeWidth,
+        points: points.map((point) => ({ x: (point.x - cx) / (width / 2), y: (point.y - cy) / (height / 2) }))
+      });
+      this.nextBlockId += 1;
+      this.dirty = true;
+      this.updateToolUI();
+    }
+
+    strokeWorldPoints(block) {
+      const hw = block.width / 2;
+      const hh = block.height / 2;
+      const cx = block.x + hw;
+      const cy = block.y + hh;
+      const rad = (block.rot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      return (block.points || []).map((point) => {
+        const lx = point.x * hw;
+        const ly = point.y * hh;
+        return { x: cx + lx * cos - ly * sin, y: cy + lx * sin + ly * cos };
+      });
+    }
+
+    strokeHitTest(block, x, y, pad = 0) {
+      const points = this.strokeWorldPoints(block);
+      if (points.length < 2) return false;
+      return distanceToPolyline(x, y, points) <= (block.strokeWidth || 0) / 2 + pad;
+    }
+
     blocksOverlap(a, b) {
       const ra = this.rotatedAABB(a);
       const rb = this.rotatedAABB(b);
@@ -1089,6 +1320,7 @@
     }
 
     containsPoint(block, px, py) {
+      if (block.shape === "stroke") return this.strokeHitTest(block, px, py);
       if (block.shape === "circle" || block.shape === "portal") {
         const r = block.width / 2;
         return Math.hypot(px - block.x - r, py - block.y - r) <= r;
@@ -1301,6 +1533,10 @@
     hitBlockAt(wx, wy) {
       for (let i = this.blocks.length - 1; i >= 0; i -= 1) {
         const block = this.blocks[i];
+        if (block.shape === "stroke") {
+          if (this.strokeHitTest(block, wx, wy, 6 / this.scale)) return block;
+          continue;
+        }
         if (block.shape === "circle" || block.shape === "portal") {
           const r = block.width / 2;
           if (Math.hypot(wx - block.x - r, wy - block.y - r) <= r) return block;
@@ -1328,6 +1564,11 @@
       els.canvas.setPointerCapture(event.pointerId);
       const point = this.worldPoint();
       if (this.tool === "place") {
+        if (this.material === "b") {
+          const start = this.clampBrushPoint(point);
+          this.drag = { mode: "brush", points: [start], strokeWidth: this.brushWidth, lastTime: performance.now() };
+          return;
+        }
         this.pushHistory();
         this.placeGhost();
         this.drag = { mode: "place" };
@@ -1466,6 +1707,18 @@
               drag.historyPushed = true;
             }
             this.removeBlock(hit);
+          }
+        }
+        return;
+      }
+      if (drag.mode === "brush") {
+        const now = performance.now();
+        const last = drag.points[drag.points.length - 1];
+        if (now - drag.lastTime >= 16 && drag.points.length < BRUSH_MAX_POINTS) {
+          const next = this.clampBrushPoint(point, drag.strokeWidth);
+          if (Math.hypot(next.x - last.x, next.y - last.y) >= BRUSH_SAMPLE_STEP) {
+            drag.points.push(next);
+            drag.lastTime = now;
           }
         }
         return;
@@ -1709,8 +1962,10 @@
       this.dirty = true;
     }
 
-    onPointerUp() {
+    onPointerUp(event) {
+      if (event && typeof event.clientX === "number") this.updatePointer(event);
       const drag = this.drag;
+      if (drag && drag.mode === "brush") this.finishBrush();
       if (drag && drag.mode === "box") this.finishBoxSelection();
       if (drag && drag.mode === "place") {
         this.pruneCovered();
@@ -1869,6 +2124,9 @@
           copy.link = null;
           copy.pairColor = undefined;
         }
+        if (block.shape === "stroke" && block.points) {
+          copy.points = block.points.map((point) => ({ x: point.x, y: point.y }));
+        }
         this.nextBlockId += 1;
         const rotated = ((copy.rot || 0) % 180) !== 0;
         const extX = rotated ? copy.height / 2 : copy.width / 2;
@@ -1898,7 +2156,19 @@
     }
 
     snapshotBlocks() {
-      return this.blocks.map((block) => ({ x: block.x, y: block.y, width: block.width, height: block.height, rot: block.rot || 0, id: block.id, shape: block.shape, link: block.link, pairColor: block.pairColor }));
+      return this.blocks.map((block) => ({
+        x: block.x,
+        y: block.y,
+        width: block.width,
+        height: block.height,
+        rot: block.rot || 0,
+        id: block.id,
+        shape: block.shape,
+        link: block.link,
+        pairColor: block.pairColor,
+        strokeWidth: block.strokeWidth,
+        points: block.points ? block.points.map((point) => ({ x: point.x, y: point.y })) : undefined
+      }));
     }
 
     pushHistory() {
@@ -1909,7 +2179,10 @@
     }
 
     restoreBlocks(list) {
-      this.blocks = list.map((block) => ({ ...block }));
+      this.blocks = list.map((block) => ({
+        ...block,
+        ...(block.points ? { points: block.points.map((point) => ({ x: point.x, y: point.y })) } : {})
+      }));
       this.nextBlockId = this.blocks.reduce((max, block) => Math.max(max, block.id), 0) + 1;
       for (const block of this.blocks) {
         if (block.link != null && !this.blocks.some((candidate) => candidate.id === block.link)) {
@@ -2023,7 +2296,9 @@
           context.strokeRect(x, y, w, h);
         }
       }
-      if (this.tool === "place" && this.pointer.inside) {
+      if (this.tool === "place" && this.material === "b") {
+        if (this.pointer.inside || (this.drag && this.drag.mode === "brush")) this.drawBrushPreview(context);
+      } else if (this.tool === "place" && this.pointer.inside) {
         const ghost = this.ghostBlock();
         this.drawBlock(context, ghost, false, 0.5, "#65a9ff");
       }
@@ -2033,6 +2308,28 @@
     drawBlock(context, block, selected, alpha, outline = null) {
       context.save();
       context.globalAlpha = alpha;
+      if (block.shape === "stroke") {
+        const hw = block.width / 2;
+        const hh = block.height / 2;
+        const points = (block.points || []).map((point) => ({ x: point.x * hw, y: point.y * hh }));
+        if (points.length >= 2) {
+          context.translate(block.x + hw, block.y + hh);
+          context.rotate((block.rot || 0) * Math.PI / 180);
+          context.lineCap = "round";
+          context.lineJoin = "round";
+          const border = (selected ? 3 : 2) / this.scale;
+          context.beginPath();
+          traceSmoothPath(context, points);
+          context.strokeStyle = outline || (selected ? "#64fbd2" : "#65a9ff");
+          context.lineWidth = block.strokeWidth + border * 2;
+          context.stroke();
+          context.strokeStyle = selected ? "#143f3b" : "#243850";
+          context.lineWidth = Math.max(1, block.strokeWidth);
+          context.stroke();
+        }
+        context.restore();
+        return;
+      }
       if (block.shape === "portal") {
         const r = block.width / 2;
         context.translate(block.x + r, block.y + r);
@@ -2090,6 +2387,33 @@
       context.strokeRect(-hw + 1.5, -hh + 1.5, block.width - 3, block.height - 3);
       context.fillStyle = selected ? "rgba(100, 251, 210, 0.5)" : "rgba(255, 209, 102, 0.32)";
       for (let x = -hw + 12; x < hw - 12; x += 28) context.fillRect(x, -hh + 8, 14, 3);
+      context.restore();
+    }
+
+    drawBrushPreview(context) {
+      const drag = this.drag && this.drag.mode === "brush" ? this.drag : null;
+      const strokeWidth = drag ? drag.strokeWidth : this.brushWidth;
+      context.save();
+      context.globalAlpha = 0.55;
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      if (drag && drag.points.length >= 2) {
+        context.beginPath();
+        traceSmoothPath(context, drag.points);
+        context.strokeStyle = "#385166";
+        context.lineWidth = strokeWidth + 4 / this.scale;
+        context.stroke();
+        context.strokeStyle = "#243850";
+        context.lineWidth = strokeWidth;
+        context.stroke();
+      }
+      const point = this.worldPoint();
+      context.globalAlpha = 0.6;
+      context.strokeStyle = "#65a9ff";
+      context.lineWidth = 1.5 / this.scale;
+      context.beginPath();
+      context.arc(point.x, point.y, strokeWidth / 2, 0, Math.PI * 2);
+      context.stroke();
       context.restore();
     }
 
@@ -2235,6 +2559,24 @@
           context.beginPath();
           context.arc(ox + (block.x + r) * scale, oy + (block.y + r) * scale, Math.max(1.5, r * scale), 0, Math.PI * 2);
           context.fill();
+          context.restore();
+          continue;
+        }
+        if (block.shape === "stroke") {
+          const hw = block.width / 2;
+          const hh = block.height / 2;
+          const points = (block.points || []).map((point) => ({ x: point.x * hw * scale, y: point.y * hh * scale }));
+          if (points.length >= 2) {
+            context.translate(ox + (block.x + hw) * scale, oy + (block.y + hh) * scale);
+            context.rotate((block.rot || 0) * Math.PI / 180);
+            context.strokeStyle = "#65a9ff";
+            context.lineCap = "round";
+            context.lineJoin = "round";
+            context.lineWidth = Math.max(1, (block.strokeWidth || 16) * scale);
+            context.beginPath();
+            traceSmoothPath(context, points);
+            context.stroke();
+          }
           context.restore();
           continue;
         }

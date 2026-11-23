@@ -639,6 +639,13 @@ kbd { padding: 2px 5px; border: 1px solid #344759; border-bottom-width: 2px; bor
   background: transparent;
   border: 2px solid #65a9ff;
 }
+.editor-material.brush i::before {
+  width: var(--icon-size, 24px);
+  height: 12px;
+  margin: -6px 0 0 calc(var(--icon-size, 24px) / -2);
+  border-radius: 6px;
+  transform: rotate(-35deg);
+}
 .editor-material.selected { background: #16344a; color: #65a9ff; border-color: rgba(101, 169, 255, 0.45); }
 .editor-material.selected i::before { background: #65a9ff; border-color: #65a9ff; }
 

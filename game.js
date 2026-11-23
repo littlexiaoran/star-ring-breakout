@@ -278,6 +278,79 @@ function segmentHitsCircle(x1, y1, x2, y2, cx, cy, radius) {
   return (x1 + dx * t - cx) ** 2 + (y1 + dy * t - cy) ** 2 <= radius * radius;
 }
 
+function closestPointOnSegment(x, y, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared === 0 ? 0 : clamp(((x - ax) * dx + (y - ay) * dy) / lengthSquared, 0, 1);
+  return { x: ax + dx * t, y: ay + dy * t };
+}
+
+function distanceToPolyline(x, y, points) {
+  if (!points || !points.length) return Infinity;
+  if (points.length === 1) return Math.hypot(x - points[0].x, y - points[0].y);
+  let best = Infinity;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const point = closestPointOnSegment(x, y, points[i].x, points[i].y, points[i + 1].x, points[i + 1].y);
+    const distance = Math.hypot(x - point.x, y - point.y);
+    if (distance < best) best = distance;
+  }
+  return best;
+}
+
+function closestPointOnPolyline(x, y, points) {
+  if (!points || !points.length) return { x, y };
+  if (points.length === 1) return { x: points[0].x, y: points[0].y };
+  let best = Infinity;
+  let result = { x: points[0].x, y: points[0].y };
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const point = closestPointOnSegment(x, y, points[i].x, points[i].y, points[i + 1].x, points[i + 1].y);
+    const distance = Math.hypot(x - point.x, y - point.y);
+    if (distance < best) {
+      best = distance;
+      result = point;
+    }
+  }
+  return result;
+}
+
+function segmentsIntersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+  const d1 = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
+  const d2 = (x2 - x1) * (y4 - y1) - (y2 - y1) * (x4 - x1);
+  const d3 = (x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3);
+  const d4 = (x4 - x3) * (y2 - y3) - (y4 - y3) * (x2 - x3);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+function segmentDistance(x1, y1, x2, y2, x3, y3, x4, y4) {
+  if (segmentsIntersect(x1, y1, x2, y2, x3, y3, x4, y4)) return 0;
+  const a = closestPointOnSegment(x1, y1, x3, y3, x4, y4);
+  const b = closestPointOnSegment(x2, y2, x3, y3, x4, y4);
+  const c = closestPointOnSegment(x3, y3, x1, y1, x2, y2);
+  const d = closestPointOnSegment(x4, y4, x1, y1, x2, y2);
+  return Math.min(
+    Math.hypot(x1 - a.x, y1 - a.y),
+    Math.hypot(x2 - b.x, y2 - b.y),
+    Math.hypot(x3 - c.x, y3 - c.y),
+    Math.hypot(x4 - d.x, y4 - d.y)
+  );
+}
+
+function traceSmoothPath(context, points) {
+  if (!points.length) return;
+  context.moveTo(points[0].x, points[0].y);
+  if (points.length === 2) {
+    context.lineTo(points[1].x, points[1].y);
+    return;
+  }
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const midX = (points[i].x + points[i + 1].x) / 2;
+    const midY = (points[i].y + points[i + 1].y) / 2;
+    context.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+  }
+  context.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+}
+
 function shuffled(items) {
   const result = [...items];
   for (let i = result.length - 1; i > 0; i -= 1) {
@@ -324,6 +397,9 @@ const MAP_DEFS = [
 const BOSS_ARENA = { id: "core", nameKey: "map.core.name", swatch: "#ffd166", bg: "#100d16", grid: "rgba(200, 170, 100, 0.06)" };
 
 function circleTouchesRect(x, y, radius, rect) {
+  if (rect.shape === "stroke") {
+    return distanceToPolyline(x, y, rect.points) < radius + (rect.halfWidth || 0);
+  }
   if (rect.shape === "circle") {
     const r = rect.width / 2;
     return (x - rect.x - r) ** 2 + (y - rect.y - r) ** 2 < (radius + r) ** 2;
@@ -347,6 +423,9 @@ function circleTouchesRect(x, y, radius, rect) {
 }
 
 function distanceToRect(x, y, rect) {
+  if (rect.shape === "stroke") {
+    return Math.max(0, distanceToPolyline(x, y, rect.points) - (rect.halfWidth || 0));
+  }
   if (rect.shape === "circle") {
     const r = rect.width / 2;
     return Math.max(0, Math.hypot(x - rect.x - r, y - rect.y - r) - r);
@@ -368,6 +447,36 @@ function distanceToRect(x, y, rect) {
 }
 
 function resolveCircleRect(entity, radius, rect) {
+  if (rect.shape === "stroke") {
+    const points = rect.points;
+    if (!points || points.length < 2) return false;
+    const closest = closestPointOnPolyline(entity.x, entity.y, points);
+    const dx = entity.x - closest.x;
+    const dy = entity.y - closest.y;
+    const distance = Math.hypot(dx, dy);
+    const minimumDistance = radius + (rect.halfWidth || 0);
+    if (distance >= minimumDistance) return false;
+    if (distance > 1e-6) {
+      entity.x = closest.x + dx / distance * minimumDistance;
+      entity.y = closest.y + dy / distance * minimumDistance;
+      return true;
+    }
+    let bestX = 1;
+    let bestY = 0;
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const sx = points[i + 1].x - points[i].x;
+      const sy = points[i + 1].y - points[i].y;
+      const length = Math.hypot(sx, sy);
+      if (length > 1e-6) {
+        bestX = -sy / length;
+        bestY = sx / length;
+        break;
+      }
+    }
+    entity.x = closest.x + bestX * minimumDistance;
+    entity.y = closest.y + bestY * minimumDistance;
+    return true;
+  }
   if (rect.shape === "circle") {
     const r = rect.width / 2;
     const dx = entity.x - rect.x - r;
@@ -1511,6 +1620,14 @@ ui.customMapEntry.addEventListener("click", () => {
 
   hasLineOfSight(x0, y0, x1, y1, clearance) {
     for (const obstacle of this.obstacles) {
+      if (obstacle.shape === "stroke") {
+        const reach = clearance + (obstacle.halfWidth || 0);
+        const points = obstacle.points || [];
+        for (let i = 0; i < points.length - 1; i += 1) {
+          if (segmentDistance(x0, y0, x1, y1, points[i].x, points[i].y, points[i + 1].x, points[i + 1].y) <= reach) return false;
+        }
+        continue;
+      }
       if (obstacle.shape === "circle") {
         const r = obstacle.width / 2;
         if (segmentHitsCircle(x0, y0, x1, y1, obstacle.x + r, obstacle.y + r, r + clearance)) return false;
@@ -1565,6 +1682,16 @@ ui.customMapEntry.addEventListener("click", () => {
   }
 
   nearestRectPoint(x, y, rect) {
+    if (rect.shape === "stroke") {
+      const points = rect.points || [];
+      const point = closestPointOnPolyline(x, y, points);
+      const half = rect.halfWidth || 0;
+      const dx = x - point.x;
+      const dy = y - point.y;
+      const length = Math.hypot(dx, dy);
+      if (half > 0 && length > 1e-6) return { x: point.x + dx / length * half, y: point.y + dy / length * half };
+      return point;
+    }
     if (rect.shape === "circle") {
       const r = rect.width / 2;
       const dx = x - rect.x - r;
@@ -2370,15 +2497,41 @@ ui.customMapEntry.addEventListener("click", () => {
       return;
     }
     if (this.map.custom) {
-      this.obstacles = this.map.blocks.filter((block) => block.shape !== "portal").map((block) => ({
-        x: block.x,
-        y: block.y,
-        width: block.width,
-        height: block.height,
-        rot: (block.rot || 0) * Math.PI / 180,
-        shape: block.shape === "circle" ? "circle" : undefined,
-        custom: true
-      }));
+      this.obstacles = this.map.blocks.filter((block) => block.shape !== "portal").map((block) => {
+        if (block.shape === "stroke") {
+          const hw = block.width / 2;
+          const hh = block.height / 2;
+          const cx = block.x + hw;
+          const cy = block.y + hh;
+          const rad = (block.rot || 0) * Math.PI / 180;
+          const cos = Math.cos(rad);
+          const sin = Math.sin(rad);
+          return {
+            x: block.x,
+            y: block.y,
+            width: block.width,
+            height: block.height,
+            rot: rad,
+            shape: "stroke",
+            halfWidth: (block.strokeWidth || 16) / 2,
+            points: (block.points || []).map((point) => {
+              const lx = point.x * hw;
+              const ly = point.y * hh;
+              return { x: cx + lx * cos - ly * sin, y: cy + lx * sin + ly * cos };
+            }),
+            custom: true
+          };
+        }
+        return {
+          x: block.x,
+          y: block.y,
+          width: block.width,
+          height: block.height,
+          rot: (block.rot || 0) * Math.PI / 180,
+          shape: block.shape === "circle" ? "circle" : undefined,
+          custom: true
+        };
+      });
       const portalIndexByBlock = new Map();
       this.map.blocks.forEach((block, index) => {
         if (block.shape !== "portal") return;
@@ -2971,8 +3124,31 @@ ui.customMapEntry.addEventListener("click", () => {
       if (!entry || typeof entry !== "object" || !entry.id || typeof entry.name !== "string") continue;
       const blocks = Array.isArray(entry.blocks)
         ? entry.blocks
-            .filter((block) => block && Number.isFinite(block.x) && Number.isFinite(block.y) && Number.isFinite(block.width) && Number.isFinite(block.height) && block.width > 0 && block.height > 0)
+            .filter((block) => block && Number.isFinite(block.x) && Number.isFinite(block.y) && Number.isFinite(block.width) && Number.isFinite(block.height) && block.width > 0 && block.height > 0 && (block.shape !== "stroke" || (Array.isArray(block.points) && block.points.length >= 2)))
             .map((block) => {
+              if (block.shape === "stroke") {
+                const rot = ((Number(block.rot) || 0) % 360 + 360) % 360;
+                const width = clamp(block.width, 8, this.world.width);
+                const height = clamp(block.height, 8, this.world.height);
+                const hw = width / 2;
+                const hh = height / 2;
+                const rad = rot * Math.PI / 180;
+                const extentX = Math.abs(hw * Math.cos(rad)) + Math.abs(hh * Math.sin(rad));
+                const extentY = Math.abs(hw * Math.sin(rad)) + Math.abs(hh * Math.cos(rad));
+                return {
+                  x: clamp(block.x, extentX - hw, this.world.width - hw - extentX),
+                  y: clamp(block.y, extentY - hh, this.world.height - hh - extentY),
+                  width,
+                  height,
+                  rot,
+                  shape: "stroke",
+                  strokeWidth: clamp(Number(block.strokeWidth) || 16, 4, 96),
+                  points: block.points.slice(0, 255).map((point) => ({
+                    x: clamp(Number(point.x) || 0, -1, 1),
+                    y: clamp(Number(point.y) || 0, -1, 1)
+                  }))
+                };
+              }
               const rot = (Math.round((Number(block.rot) || 0) / 15) % 24) * 15;
               const hw = block.width / 2;
               const hh = block.height / 2;
@@ -5203,6 +5379,23 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
       context.fillRect(width - 9, height - 9, 3, 3);
     };
     for (const obstacle of this.obstacles) {
+      if (obstacle.shape === "stroke") {
+        const points = obstacle.points;
+        if (!points || points.length < 2) continue;
+        context.save();
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        context.beginPath();
+        traceSmoothPath(context, points);
+        context.strokeStyle = "#385166";
+        context.lineWidth = obstacle.halfWidth * 2 + 6;
+        context.stroke();
+        context.strokeStyle = "#152334";
+        context.lineWidth = obstacle.halfWidth * 2;
+        context.stroke();
+        context.restore();
+        continue;
+      }
       if (obstacle.shape === "circle") {
         const r = obstacle.width / 2;
         context.fillStyle = "#152334";
@@ -5729,6 +5922,22 @@ enemy.laserAngle = angle + random(-8, 8) * Math.PI / 180;
     context.restore();
     context.fillStyle = "#263b4d";
     for (const obstacle of this.obstacles) {
+      if (obstacle.shape === "stroke") {
+        const points = obstacle.points;
+        if (points && points.length >= 2) {
+          context.save();
+          context.strokeStyle = "#263b4d";
+          context.lineCap = "round";
+          context.lineJoin = "round";
+          context.lineWidth = Math.max(1, obstacle.halfWidth * 2 * Math.min(scaleX, scaleY));
+          context.beginPath();
+          context.moveTo(points[0].x * scaleX, points[0].y * scaleY);
+          for (let i = 1; i < points.length; i += 1) context.lineTo(points[i].x * scaleX, points[i].y * scaleY);
+          context.stroke();
+          context.restore();
+        }
+        continue;
+      }
       if (obstacle.shape === "circle") {
         const r = obstacle.width / 2;
         context.beginPath();
